@@ -1,0 +1,15 @@
+[target.aarch64-linux-android]
+ar = "llvm-ar.exe"
+linker = "aarch64-linux-android29-clang.cmd"
+
+[target.armv7-linux-androideabi]
+ar = "llvm-ar.exe"
+linker = "armv7a-linux-androideabi29-clang.cmd"
+
+[target.i686-linux-android]
+ar = "llvm-ar.exe"
+linker = "i686-linux-android29-clang.cmd"
+
+[target.x86_64-linux-android]
+ar = "llvm-ar.exe"
+linker = "x86_64-linux-android29-clang.cmd"
