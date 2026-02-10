@@ -16,9 +16,18 @@ android {
         versionCode = 1
         versionName = "1.0"
 
+        // Configure NDK for modern Snapdragon chips (Poco F5 focus)
+        ndk {
+            abiFilters += listOf("arm64-v8a")
+        }
+
         externalNativeBuild {
             cmake {
-                cppFlags += ""
+                cppFlags += "-std=c++17"
+                arguments += listOf(
+                    "-DANDROID_STL=c++_shared",
+                    "-DANDROID_PLATFORM=android-29"
+                )
             }
         }
     }
@@ -46,8 +55,14 @@ android {
             version = "3.22.1"
         }
     }
+
+    // Configure NDK version (auto-detect or use specific version)
+    ndkVersion = "28.2.13676358"
     
 }
+
+// Simple approach: Let users build Rust manually first
+// Run: build-rust.bat before running gradlew assembleDebug
 
 dependencies {
     implementation(libs.androidx.core.ktx)
