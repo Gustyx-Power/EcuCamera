@@ -17,13 +17,60 @@ if exist "%~dp0env_setup.bat" (
     exit /b 1
 )
 
+echo Checking for Rust/Cargo...
+where cargo >nul 2>&1
+if errorlevel 1 (
+    echo Warning: Cargo not found in PATH. Rust components may not build properly.
+    echo Please install Rust from https://rustup.rs/
+) else (
+    echo Cargo found, building Rust components...
+    cd app\src\main\rust
+    cargo build --release
+    if errorlevel 1 (
+        echo Warning: Rust build failed, continuing with Android build...
+    ) else (
+        echo Rust build completed successfully.
+    )
+    cd ..\..\..\..
+)
+
 echo Building Debug APK...
 
 :: We now use 'gradle' directly since we installed it
 call gradle assembleDebug
 
 if errorlevel 1 goto :error
-echo Build Initialized (Skeleton).
+
+echo Build completed successfully!
+echo.
+
+:: Check for connected devices and offer to install
+echo Checking for connected Android devices...
+adb devices | findstr "device$" >nul
+if not errorlevel 1 (
+    echo.
+    echo Connected Android devices found!
+    set /p install_choice="Do you want to install the APK on connected device? (y/n): "
+    if /i "%install_choice%"=="y" (
+        echo Installing APK...
+        adb install -r app\build\outputs\apk\debug\app-debug.apk
+        if not errorlevel 1 (
+            echo APK installed successfully!
+            echo You can now launch the app on your device.
+        ) else (
+            echo Failed to install APK. Make sure USB debugging is enabled.
+        )
+    )
+) else (
+    echo No Android devices connected via USB.
+    echo To install on device:
+    echo 1. Enable USB debugging on your Android device
+    echo 2. Connect device via USB
+    echo 3. Run: adb install -r app\build\outputs\apk\debug\app-debug.apk
+)
+
+echo.
+echo APK location: app\build\outputs\apk\debug\app-debug.apk
 exit /b 0
 
 :error
