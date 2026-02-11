@@ -1,20 +1,19 @@
 package id.xms.ecucamera.engine.core
 
 import android.content.Context
+import android.graphics.ImageFormat
 import android.hardware.camera2.*
+import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
+import id.xms.ecucamera.engine.pipeline.SessionManager
+import id.xms.ecucamera.engine.pipeline.RequestManager
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-/**
- * The Brain: Core Camera Engine that manages camera lifecycle and state
- * 
- * Philosophy: "Backend First" - Perfect hardware lifecycle before any UI
- */
 class CameraEngine(private val context: Context) {
     
     companion object {
@@ -34,6 +33,13 @@ class CameraEngine(private val context: Context) {
     private var captureSession: CameraCaptureSession? = null
     private var currentCameraId: String? = null
     
+    // Pipeline components
+    private val sessionManager = SessionManager()
+    private val requestManager = RequestManager()
+    
+    // Test components for backend validation
+    private var testImageReader: ImageReader? = null
+    
     // Background thread for camera operations
     private val backgroundThread = HandlerThread("CameraEngineThread").apply { start() }
     private val backgroundHandler = Handler(backgroundThread.looper)
@@ -52,7 +58,7 @@ class CameraEngine(private val context: Context) {
         }
         
         override fun onDisconnected(camera: CameraDevice) {
-            Log.w(TAG, "🟡 Camera $currentCameraId DISCONNECTED")
+            Log.w(TAG, "Camera $currentCameraId DISCONNECTED")
             cleanup()
             updateState(CameraState.Error("Camera disconnected"))
         }
@@ -66,7 +72,7 @@ class CameraEngine(private val context: Context) {
                 ERROR_CAMERA_SERVICE -> "Camera service error"
                 else -> "Unknown camera error: $error"
             }
-            Log.e(TAG, "🔴 Camera $currentCameraId ERROR: $errorMsg")
+            Log.e(TAG, "Camera $currentCameraId ERROR: $errorMsg")
             cleanup()
             updateState(CameraState.Error(errorMsg))
         }
@@ -77,18 +83,18 @@ class CameraEngine(private val context: Context) {
      */
     private val sessionStateCallback = object : CameraCaptureSession.StateCallback() {
         override fun onConfigured(session: CameraCaptureSession) {
-            Log.d(TAG, "🟢 Camera Session CONFIGURED for camera $currentCameraId")
+            Log.d(TAG, "Camera Session CONFIGURED for camera $currentCameraId")
             captureSession = session
             updateState(CameraState.Configured)
         }
         
         override fun onConfigureFailed(session: CameraCaptureSession) {
-            Log.e(TAG, "🔴 Camera Session CONFIGURATION FAILED for camera $currentCameraId")
+            Log.e(TAG, "Camera Session CONFIGURATION FAILED for camera $currentCameraId")
             updateState(CameraState.Error("Session configuration failed"))
         }
         
         override fun onClosed(session: CameraCaptureSession) {
-            Log.d(TAG, "🟡 Camera Session CLOSED for camera $currentCameraId")
+            Log.d(TAG, "Camera Session CLOSED for camera $currentCameraId")
             captureSession = null
         }
     }
@@ -99,11 +105,11 @@ class CameraEngine(private val context: Context) {
     fun openCamera(cameraId: String) {
         engineScope.launch {
             try {
-                Log.d(TAG, "🚀 Attempting to open camera: $cameraId")
+                Log.d(TAG, "Attempting to open camera: $cameraId")
                 
                 // Check if camera is already open
                 if (_cameraState.value !is CameraState.Closed) {
-                    Log.w(TAG, "⚠️ Camera already in use. Current state: ${_cameraState.value}")
+                    Log.w(TAG, "Camera already in use. Current state: ${_cameraState.value}")
                     return@launch
                 }
                 
@@ -111,7 +117,7 @@ class CameraEngine(private val context: Context) {
                 val availableCameras = cameraManager.cameraIdList
                 if (!availableCameras.contains(cameraId)) {
                     val errorMsg = "Camera ID $cameraId not found. Available: ${availableCameras.joinToString()}"
-                    Log.e(TAG, "🔴 $errorMsg")
+                    Log.e(TAG, "$errorMsg")
                     updateState(CameraState.Error(errorMsg))
                     return@launch
                 }
@@ -123,18 +129,18 @@ class CameraEngine(private val context: Context) {
                 withContext(Dispatchers.Main) {
                     try {
                         cameraManager.openCamera(cameraId, deviceStateCallback, backgroundHandler)
-                        Log.d(TAG, "📞 Camera open request sent for: $cameraId")
+                        Log.d(TAG, "Camera open request sent for: $cameraId")
                     } catch (e: SecurityException) {
-                        Log.e(TAG, "🔴 Security exception opening camera $cameraId", e)
+                        Log.e(TAG, "Security exception opening camera $cameraId", e)
                         updateState(CameraState.Error("Camera permission denied", e))
                     } catch (e: Exception) {
-                        Log.e(TAG, "🔴 Exception opening camera $cameraId", e)
+                        Log.e(TAG, "Exception opening camera $cameraId", e)
                         updateState(CameraState.Error("Failed to open camera: ${e.message}", e))
                     }
                 }
                 
             } catch (e: Exception) {
-                Log.e(TAG, "🔴 Unexpected error in openCamera", e)
+                Log.e(TAG, "Unexpected error in openCamera", e)
                 updateState(CameraState.Error("Unexpected error: ${e.message}", e))
             }
         }
@@ -145,46 +151,66 @@ class CameraEngine(private val context: Context) {
      */
     fun closeCamera() {
         engineScope.launch {
-            Log.d(TAG, "🛑 Closing camera: $currentCameraId")
+            Log.d(TAG, "Closing camera: $currentCameraId")
             cleanup()
             updateState(CameraState.Closed)
-            Log.d(TAG, "✅ Camera closed successfully")
+            Log.d(TAG, "Camera closed successfully")
         }
     }
     
     /**
-     * Configure capture session (minimal implementation for now)
+     * Start preview using the new pipeline architecture
+     * Creates a dummy ImageReader for backend testing (no UI yet)
      */
-    fun configureSession() {
+    fun startPreview() {
         engineScope.launch {
             try {
                 val device = cameraDevice
                 if (device == null) {
-                    Log.e(TAG, "🔴 Cannot configure session: Camera device is null")
+                    Log.e(TAG, "Cannot start preview: Camera device is null")
                     updateState(CameraState.Error("Camera device not available"))
                     return@launch
                 }
                 
                 if (_cameraState.value !is CameraState.Open) {
-                    Log.e(TAG, "🔴 Cannot configure session: Camera not in Open state. Current: ${_cameraState.value}")
+                    Log.e(TAG, "Cannot start preview: Camera not in Open state. Current: ${_cameraState.value}")
                     return@launch
                 }
                 
-                Log.d(TAG, "🔧 Configuring capture session for camera $currentCameraId")
+                Log.d(TAG, "Starting preview for camera $currentCameraId")
                 
-                // For now, just create an empty session to test the callback
-                // In Phase 4, we'll add actual surfaces here
-                withContext(Dispatchers.Main) {
-                    device.createCaptureSession(
-                        emptyList(), // No surfaces yet - just testing the connection
-                        sessionStateCallback,
-                        backgroundHandler
-                    )
-                }
+                // Create dummy ImageReader for backend testing (640x480, YUV_420_888)
+                testImageReader = ImageReader.newInstance(640, 480, ImageFormat.YUV_420_888, 2)
+                val surface = testImageReader!!.surface
+                
+                Log.d(TAG, "Created test ImageReader: 640x480, YUV_420_888")
+                
+                // Use SessionManager to create capture session
+                captureSession = sessionManager.createSession(
+                    device = device,
+                    targets = listOf(surface),
+                    backgroundHandler = backgroundHandler
+                )
+                
+                // Use RequestManager to create preview request
+                val previewRequest = requestManager.createPreviewRequest(
+                    session = captureSession!!,
+                    target = surface
+                )
+                
+                // Start repeating request
+                captureSession!!.setRepeatingRequest(
+                    previewRequest,
+                    null, // No capture callback for now
+                    backgroundHandler
+                )
+                
+                updateState(CameraState.Configured)
+                Log.d(TAG, "ECU_ENGINE: Preview Running (Backend Only)")
                 
             } catch (e: Exception) {
-                Log.e(TAG, "🔴 Error configuring session", e)
-                updateState(CameraState.Error("Session configuration error: ${e.message}", e))
+                Log.e(TAG, "Error starting preview", e)
+                updateState(CameraState.Error("Preview start error: ${e.message}", e))
             }
         }
     }
@@ -195,7 +221,7 @@ class CameraEngine(private val context: Context) {
     private fun updateState(newState: CameraState) {
         val oldState = _cameraState.value
         _cameraState.value = newState
-        Log.d(TAG, "📊 State transition: $oldState → $newState")
+        Log.d(TAG, "State transition: $oldState → $newState")
     }
     
     /**
@@ -204,6 +230,9 @@ class CameraEngine(private val context: Context) {
     private fun cleanup() {
         captureSession?.close()
         captureSession = null
+        
+        testImageReader?.close()
+        testImageReader = null
         
         cameraDevice?.close()
         cameraDevice = null
@@ -225,7 +254,7 @@ class CameraEngine(private val context: Context) {
      * Cleanup resources when engine is destroyed
      */
     fun destroy() {
-        Log.d(TAG, "🧹 Destroying Camera Engine")
+        Log.d(TAG, "Destroying Camera Engine")
         engineScope.cancel()
         cleanup()
         backgroundThread.quitSafely()
