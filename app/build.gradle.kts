@@ -16,7 +16,6 @@ android {
         versionCode = 1
         versionName = "1.0"
 
-        // Configure NDK for modern Snapdragon chips (Poco F5 focus)
         ndk {
             abiFilters += listOf("arm64-v8a")
         }
@@ -29,6 +28,12 @@ android {
                     "-DANDROID_PLATFORM=android-29"
                 )
             }
+        }
+    }
+
+    sourceSets {
+        getByName("main") {
+            jniLibs.srcDirs("src/main/jniLibs")
         }
     }
 
