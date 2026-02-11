@@ -2,7 +2,7 @@ use jni::JNIEnv;
 use jni::objects::{JClass, JByteBuffer};
 use jni::sys::{jint, jstring};
 
-/// Process image frame data and calculate average luminance
+/// Process image frame data and calculate luminance histogram
 fn process_image_frame(data: &[u8], width: i32, height: i32, stride: i32) -> String {
     if width <= 0 || height <= 0 || stride <= 0 {
         return "Error: Invalid dimensions".to_string();
@@ -21,11 +21,12 @@ fn process_image_frame(data: &[u8], width: i32, height: i32, stride: i32) -> Str
         return format!("Error: Buffer too small. Len: {}, Expected: {}", data.len(), required_size);
     }
     
-    let mut luma_sum: u64 = 0;
-    let mut pixel_count: u64 = 0;
+    // Initialize histogram counter array (256 bins for 0-255 luminance values)
+    let mut histogram = [0u32; 256];
     
     // Process frame row by row, respecting stride
-    for row in 0..height {
+    // Use step of 4 for performance optimization (skip 4 pixels)
+    for row in (0..height).step_by(4) {
         let row_start = row * stride;
         let row_end = row_start + width;
         
@@ -33,23 +34,19 @@ fn process_image_frame(data: &[u8], width: i32, height: i32, stride: i32) -> Str
             break;
         }
         
-        // Process pixels in this row
-        for col in 0..width {
+        // Process pixels in this row with step of 4
+        for col in (0..width).step_by(4) {
             let pixel_index = row_start + col;
             if pixel_index < data.len() {
-                luma_sum += data[pixel_index] as u64;
-                pixel_count += 1;
+                let pixel_value = data[pixel_index];
+                histogram[pixel_value as usize] += 1;
             }
         }
     }
     
-    let avg_luma = if pixel_count > 0 {
-        luma_sum / pixel_count
-    } else {
-        0
-    };
-    
-    format!("LUMA: {} | RES: {}x{} | STRIDE: {}", avg_luma, width, height, stride)
+    // Convert histogram to CSV string format
+    let csv_values: Vec<String> = histogram.iter().map(|&count| count.to_string()).collect();
+    csv_values.join(",")
 }
 
 /// Basic Rust connection test
@@ -129,7 +126,7 @@ pub extern "C" fn Java_id_xms_ecucamera_bridge_NativeBridge_analyzeFrame(
         return env.new_string(error_msg).unwrap().into_raw();
     }
     
-    // Process the frame and calculate luminance
+    // Process the frame and calculate histogram
     let result = process_image_frame(data, width, height, stride);
     
     // Return result as Java string
