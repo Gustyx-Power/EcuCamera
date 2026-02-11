@@ -2,6 +2,7 @@ package id.xms.ecucamera
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.view.Surface
@@ -16,10 +17,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.Modifier
 import androidx.compose.material3.*
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.*
 import androidx.core.content.ContextCompat
@@ -62,9 +66,23 @@ class MainActivity : ComponentActivity() {
     ) { isGranted ->
         if (isGranted) {
             Log.d(TAG, "Camera permission GRANTED")
-            startCameraEngine()
+            checkStoragePermission()
         } else {
             Log.e(TAG, "Camera permission DENIED")
+        }
+    }
+    
+    // Storage permission launcher
+    private val storagePermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            Log.d(TAG, "Storage permission GRANTED")
+            startCameraEngine()
+        } else {
+            Log.e(TAG, "Storage permission DENIED")
+            // Still start camera engine, but photo saving might fail
+            startCameraEngine()
         }
     }
     
@@ -205,6 +223,24 @@ class MainActivity : ComponentActivity() {
                             )
                         }
                     }
+                    
+                    // Shutter button at bottom center
+                    Button(
+                        onClick = {
+                            Log.d(TAG, "Shutter button pressed")
+                            cameraEngine.takePicture()
+                        },
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = 32.dp)
+                            .size(80.dp)
+                            .clip(CircleShape),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = androidx.compose.ui.graphics.Color.White
+                        )
+                    ) {
+                        // Empty content - just a white circular button
+                    }
                 }
             }
         }
@@ -214,11 +250,32 @@ class MainActivity : ComponentActivity() {
         when (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)) {
             PackageManager.PERMISSION_GRANTED -> {
                 Log.d(TAG, "Camera permission already granted")
-                startCameraEngine()
+                checkStoragePermission()
             }
             else -> {
                 Log.d(TAG, "Requesting camera permission...")
                 cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+            }
+        }
+    }
+    
+    private fun checkStoragePermission() {
+        // For Android 10+ (API 29+), we don't need WRITE_EXTERNAL_STORAGE for MediaStore
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            Log.d(TAG, "Android 10+: No storage permission needed for MediaStore")
+            startCameraEngine()
+            return
+        }
+        
+        // For older versions, check WRITE_EXTERNAL_STORAGE
+        when (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE)) {
+            PackageManager.PERMISSION_GRANTED -> {
+                Log.d(TAG, "Storage permission already granted")
+                startCameraEngine()
+            }
+            else -> {
+                Log.d(TAG, "Requesting storage permission...")
+                storagePermissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
             }
         }
     }

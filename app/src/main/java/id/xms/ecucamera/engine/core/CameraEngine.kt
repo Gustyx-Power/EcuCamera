@@ -10,6 +10,7 @@ import android.os.HandlerThread
 import android.util.Log
 import android.view.Surface
 import id.xms.ecucamera.bridge.NativeBridge
+import id.xms.ecucamera.engine.controller.CaptureController
 import id.xms.ecucamera.engine.controller.ExposureController
 import id.xms.ecucamera.engine.controller.FocusController
 import id.xms.ecucamera.engine.pipeline.SessionManager
@@ -42,6 +43,7 @@ class CameraEngine(private val context: Context) {
     private val lensManager = LensManager()
     private val exposureController = ExposureController()
     private val focusController = FocusController()
+    private val captureController = CaptureController(context)
     
     // Manual exposure control variables
     private var isManualMode = false
@@ -54,6 +56,7 @@ class CameraEngine(private val context: Context) {
     
     private var testImageReader: ImageReader? = null
     private var imageReader: ImageReader? = null
+    private var jpegReader: ImageReader? = null
     private var previewJob: Job? = null
     
     // Track current surfaces for manual exposure updates
@@ -237,7 +240,11 @@ class CameraEngine(private val context: Context) {
                 // Store current surface for manual exposure updates
                 currentViewFinderSurface = viewFinderSurface
                 
+                // Initialize analysis ImageReader (YUV format for processing)
                 this@CameraEngine.imageReader = ImageReader.newInstance(640, 480, ImageFormat.YUV_420_888, 2)
+                
+                // Initialize JPEG ImageReader for still capture (high resolution)
+                this@CameraEngine.jpegReader = ImageReader.newInstance(1920, 1080, ImageFormat.JPEG, 1)
                 
                 this@CameraEngine.imageReader!!.setOnImageAvailableListener({ reader ->
                     try {
@@ -289,7 +296,38 @@ class CameraEngine(private val context: Context) {
                     }
                 }, backgroundHandler)
                 
-                val targets = listOf(viewFinderSurface, this@CameraEngine.imageReader!!.surface)
+                // Setup JPEG capture listener
+                this@CameraEngine.jpegReader!!.setOnImageAvailableListener({ reader ->
+                    try {
+                        val safeReader = this@CameraEngine.jpegReader ?: return@setOnImageAvailableListener
+                        val image = safeReader.acquireLatestImage() ?: return@setOnImageAvailableListener
+                        
+                        try {
+                            Log.d("ECU_CAPTURE", "JPEG image captured! Size: ${image.width}x${image.height}")
+                            
+                            val plane = image.planes[0]
+                            val buffer = plane.buffer
+                            
+                            // Save the image
+                            val uri = captureController.saveImage(buffer, 0) // TODO: Get actual rotation
+                            if (uri != null) {
+                                Log.d("ECU_CAPTURE", "Photo saved to: $uri")
+                            } else {
+                                Log.e("ECU_CAPTURE", "Failed to save photo")
+                            }
+                            
+                        } catch (e: Exception) {
+                            Log.e("ECU_ERROR", "JPEG processing failed", e)
+                        } finally {
+                            image.close()
+                        }
+                        
+                    } catch (e: Exception) {
+                        Log.e("ECU_ERROR", "JPEG listener error", e)
+                    }
+                }, backgroundHandler)
+                
+                val targets = listOf(viewFinderSurface, this@CameraEngine.imageReader!!.surface, this@CameraEngine.jpegReader!!.surface)
                 
                 device.createCaptureSession(
                     targets,
@@ -352,6 +390,77 @@ class CameraEngine(private val context: Context) {
         }
     }
     
+    /**
+     * Capture a still image in JPEG format
+     */
+    fun takePicture() {
+        engineScope.launch {
+            try {
+                val device = cameraDevice
+                val session = captureSession
+                val jpegReader = jpegReader
+                
+                if (device == null || session == null || jpegReader == null) {
+                    Log.e(TAG, "Cannot take picture: Camera not ready")
+                    return@launch
+                }
+                
+                Log.d(TAG, "Taking picture...")
+                
+                // Create capture request for still image
+                val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
+                builder.addTarget(jpegReader.surface)
+                
+                // Apply current manual settings
+                if (isManualMode) {
+                    builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
+                    builder.set(CaptureRequest.SENSOR_SENSITIVITY, currentIso)
+                    builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, currentExpTime)
+                    Log.d(TAG, "Still capture with manual exposure: ISO=$currentIso, ExpTime=${currentExpTime}ns")
+                } else {
+                    builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                }
+                
+                // Apply focus settings
+                if (isManualFocusMode) {
+                    focusController.applyManualFocus(builder, currentFocusDistance)
+                } else {
+                    focusController.applyAutoFocus(builder)
+                }
+                
+                // Set JPEG orientation (TODO: Get actual device orientation)
+                builder.set(CaptureRequest.JPEG_ORIENTATION, 0)
+                
+                // Set JPEG quality
+                builder.set(CaptureRequest.JPEG_QUALITY, 95.toByte())
+                
+                builder.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
+                
+                // Capture the image
+                session.capture(builder.build(), object : CameraCaptureSession.CaptureCallback() {
+                    override fun onCaptureCompleted(
+                        session: CameraCaptureSession,
+                        request: CaptureRequest,
+                        result: TotalCaptureResult
+                    ) {
+                        Log.d(TAG, "Still capture completed")
+                    }
+                    
+                    override fun onCaptureFailed(
+                        session: CameraCaptureSession,
+                        request: CaptureRequest,
+                        failure: CaptureFailure
+                    ) {
+                        Log.e(TAG, "Still capture failed: ${failure.reason}")
+                    }
+                }, backgroundHandler)
+                
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to take picture", e)
+            }
+        }
+    }
+
     /**
      * Toggle between auto and manual focus mode
      */
@@ -442,6 +551,7 @@ class CameraEngine(private val context: Context) {
             val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
             builder.addTarget(viewFinder)
             builder.addTarget(reader.surface)
+            // Note: Don't add JPEG reader to preview request - it's only for still capture
             
             if (isManualMode) {
                 // Set manual exposure mode
@@ -510,6 +620,9 @@ class CameraEngine(private val context: Context) {
         
         imageReader?.close()
         imageReader = null
+        
+        jpegReader?.close()
+        jpegReader = null
         
         cameraDevice?.close()
         cameraDevice = null
