@@ -14,6 +14,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -22,6 +23,7 @@ import androidx.lifecycle.lifecycleScope
 import id.xms.ecucamera.engine.core.CameraEngine
 import id.xms.ecucamera.engine.core.CameraState
 import id.xms.ecucamera.engine.probe.HardwareProbe
+import id.xms.ecucamera.engine.pipeline.PipelineValidator
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -29,7 +31,7 @@ class MainActivity : ComponentActivity() {
         private const val TAG = "ECU_MAIN"
     }
     
-    private lateinit var cameraEngine: CameraEngine
+    lateinit var cameraEngine: CameraEngine // Made public for Compose access
     private lateinit var hardwareProbe: HardwareProbe
     
     // Permission launcher
@@ -37,17 +39,17 @@ class MainActivity : ComponentActivity() {
         ActivityResultContracts.RequestPermission()
     ) { isGranted ->
         if (isGranted) {
-            Log.d(TAG, "✅ Camera permission GRANTED")
+            Log.d(TAG, "Camera permission GRANTED")
             startCameraEngine()
         } else {
-            Log.e(TAG, "❌ Camera permission DENIED")
+            Log.e(TAG, "Camera permission DENIED")
         }
     }
     
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
-        Log.d(TAG, "🚀 EcuCamera Phase 3: The Silent Engine - Starting")
+        Log.d(TAG, "EcuCamera : The Pipeline & Request Manager - Starting")
         
         // Initialize engine components
         cameraEngine = CameraEngine(this)
@@ -71,11 +73,11 @@ class MainActivity : ComponentActivity() {
     private fun checkAndRequestCameraPermission() {
         when (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)) {
             PackageManager.PERMISSION_GRANTED -> {
-                Log.d(TAG, "✅ Camera permission already granted")
+                Log.d(TAG, "Camera permission already granted")
                 startCameraEngine()
             }
             else -> {
-                Log.d(TAG, "📋 Requesting camera permission...")
+                Log.d(TAG, "Requesting camera permission...")
                 cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
             }
         }
@@ -84,29 +86,68 @@ class MainActivity : ComponentActivity() {
     private fun startCameraEngine() {
         lifecycleScope.launch {
             try {
-                Log.d(TAG, "🔍 Starting hardware probe...")
+                Log.d(TAG, "Starting hardware probe...")
                 hardwareProbe.dumpCapabilities()
                 
-                Log.d(TAG, "🎥 Starting camera engine...")
-                cameraEngine.openCamera("0") // Back camera
+                Log.d(TAG, "Validating pipeline components...")
+                PipelineValidator.logPipelineArchitecture()
+                val pipelineValid = PipelineValidator.validatePipelineComponents()
+                
+                if (!pipelineValid) {
+                    Log.e(TAG, "Pipeline validation failed - aborting camera start")
+                    return@launch
+                }
+                
+                Log.d(TAG, "Starting camera engine...")
+                
+                // Observe camera state changes
+                lifecycleScope.launch {
+                    cameraEngine.cameraState.collect { state ->
+                        Log.d(TAG, "Camera state changed to: $state")
+                        
+                        // Auto-start preview when camera is opened
+                        if (state is CameraState.Open) {
+                            Log.d(TAG, "Camera opened, starting preview...")
+                            cameraEngine.startPreview()
+                        }
+                    }
+                }
+                
+                // Open the back camera
+                cameraEngine.openCamera("0")
                 
             } catch (e: Exception) {
-                Log.e(TAG, "🔴 Failed to start camera engine", e)
+                Log.e(TAG, "Failed to start camera engine", e)
             }
         }
     }
     
     override fun onDestroy() {
         super.onDestroy()
-        Log.d(TAG, "🛑 Destroying MainActivity")
+        Log.d(TAG, "Destroying MainActivity")
         cameraEngine.destroy()
     }
 }
 
 @Composable
 fun EngineStatusScreen() {
-    var cameraState by remember { mutableStateOf<CameraState>(CameraState.Closed) }
+    val context = LocalContext.current
+    val activity = context as MainActivity
+    
+    val cameraState by activity.cameraEngine.cameraState.collectAsState()
     var permissionStatus by remember { mutableStateOf("Checking...") }
+    
+    // Update permission status
+    LaunchedEffect(Unit) {
+        permissionStatus = if (ContextCompat.checkSelfPermission(
+                context, 
+                Manifest.permission.CAMERA
+            ) == PackageManager.PERMISSION_GRANTED) {
+            "GRANTED"
+        } else {
+            "DENIED"
+        }
+    }
     
     Column(
         modifier = Modifier
@@ -126,7 +167,7 @@ fun EngineStatusScreen() {
         Spacer(modifier = Modifier.height(8.dp))
         
         Text(
-            text = "Phase 3: The Silent Engine",
+            text = "Phase 4: The Pipeline & Request Manager",
             style = MaterialTheme.typography.titleMedium,
             color = Color.Gray,
             textAlign = TextAlign.Center
@@ -182,9 +223,11 @@ fun EngineStatusScreen() {
         Spacer(modifier = Modifier.height(24.dp))
         
         Text(
-            text = "🔍 Hardware Probe: Scanning device capabilities...\n" +
-                  "🎥 Camera Engine: Attempting to connect to back camera...\n" +
-                  "📊 State Management: Monitoring camera lifecycle...\n\n" +
+            text = "Hardware Probe: Scanning device capabilities...\n" +
+                  "Camera Engine: Attempting to connect to back camera...\n" +
+                  "Session Manager: Creating capture sessions...\n" +
+                  "Request Manager: Building capture requests...\n" +
+                  "State Management: Monitoring camera lifecycle...\n\n" +
                   "All detailed logs are in Logcat with tag 'ECU_*'",
             style = MaterialTheme.typography.bodySmall,
             color = Color.Gray,
