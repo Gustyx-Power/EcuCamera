@@ -2,7 +2,7 @@
 setlocal enabledelayedexpansion
 
 echo ========================================
-echo   EcuCamera Logcat Viewer
+echo   EcuCamera App Logcat (Simple)
 echo ========================================
 echo.
 
@@ -25,7 +25,7 @@ if %ERRORLEVEL% NEQ 0 (
 )
 
 echo [INFO] Device connected
-echo [INFO] Starting logcat with ECU filters...
+echo [INFO] Starting logcat with app package filter...
 echo.
 echo ========================================
 echo   Press Ctrl+C to stop
@@ -35,19 +35,7 @@ echo.
 REM Clear logcat buffer first
 adb logcat -c
 
-REM Start logcat with filters for ECU tags
-REM -v time: Show timestamps
-REM -s: Silent mode (only show specified tags)
-adb logcat -v time ^
-    ECU_MAIN:V ^
-    ECU_ENGINE:V ^
-    ECU_DEBUG:V ^
-    ECU_RUST:V ^
-    ECU_ERROR:E ^
-    ECU_LENS:V ^
-    NativeBridge:V ^
-    AndroidRuntime:E ^
-    System.err:E ^
-    *:S
+REM Start logcat with grep-style filtering for the app package
+adb logcat -v time | findstr /i "id.xms.ecucamera ECU_ NativeBridge AndroidRuntime"
 
 pause

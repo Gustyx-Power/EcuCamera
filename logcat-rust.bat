@@ -2,7 +2,7 @@
 setlocal enabledelayedexpansion
 
 echo ========================================
-echo   EcuCamera Logcat Viewer
+echo   EcuCamera Rust Processing Logs
 echo ========================================
 echo.
 
@@ -25,7 +25,7 @@ if %ERRORLEVEL% NEQ 0 (
 )
 
 echo [INFO] Device connected
-echo [INFO] Starting logcat with ECU filters...
+echo [INFO] Monitoring Rust image processing logs...
 echo.
 echo ========================================
 echo   Press Ctrl+C to stop
@@ -35,19 +35,12 @@ echo.
 REM Clear logcat buffer first
 adb logcat -c
 
-REM Start logcat with filters for ECU tags
-REM -v time: Show timestamps
-REM -s: Silent mode (only show specified tags)
+REM Start logcat with Rust-specific filters
 adb logcat -v time ^
-    ECU_MAIN:V ^
-    ECU_ENGINE:V ^
     ECU_DEBUG:V ^
     ECU_RUST:V ^
     ECU_ERROR:E ^
-    ECU_LENS:V ^
     NativeBridge:V ^
-    AndroidRuntime:E ^
-    System.err:E ^
     *:S
 
 pause
