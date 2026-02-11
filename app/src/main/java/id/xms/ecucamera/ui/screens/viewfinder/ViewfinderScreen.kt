@@ -1,5 +1,6 @@
 package id.xms.ecucamera.ui.screens.viewfinder
 
+import android.view.MotionEvent
 import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
@@ -13,7 +14,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 @Composable
 fun ViewfinderScreen(
     onSurfaceReady: (Surface) -> Unit,
-    onSurfaceDestroyed: () -> Unit
+    onSurfaceDestroyed: () -> Unit,
+    onTouchEvent: ((MotionEvent) -> Boolean)? = null
 ) {
     AndroidView(
         modifier = Modifier
@@ -38,6 +40,11 @@ fun ViewfinderScreen(
                     ) {
                     }
                 })
+                
+                // Handle touch events for zoom gestures
+                setOnTouchListener { _, event ->
+                    onTouchEvent?.invoke(event) ?: false
+                }
             }
         }
     )
