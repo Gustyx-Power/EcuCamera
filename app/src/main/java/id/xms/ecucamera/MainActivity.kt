@@ -167,7 +167,7 @@ fun EngineStatusScreen() {
         Spacer(modifier = Modifier.height(8.dp))
         
         Text(
-            text = "Phase 4: The Pipeline & Request Manager",
+            text = "The Pipeline & Request Manager",
             style = MaterialTheme.typography.titleMedium,
             color = Color.Gray,
             textAlign = TextAlign.Center
