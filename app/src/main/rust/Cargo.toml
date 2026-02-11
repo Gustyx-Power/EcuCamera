@@ -8,8 +8,7 @@ name = "ecucamera_engine"
 crate-type = ["cdylib"]
 
 [dependencies]
-# Using a simpler JNI approach to avoid build script issues
-# jni = "0.21.1"
+jni = "0.21.1"
 
 [profile.release]
 lto = true
