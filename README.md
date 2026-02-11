@@ -1,6 +1,6 @@
 # EcuCamera
 
-A high-performance Android application for ECU (Electronic Control Unit) communication and camera integration, built with a multi-language architecture combining Kotlin, C++, and Rust.
+A high-performance Android application for ECU (Enhance Camera Utility) communication and camera integration, built with a multi-language architecture combining Kotlin, C++, and Rust.
 
 ## Features
 
