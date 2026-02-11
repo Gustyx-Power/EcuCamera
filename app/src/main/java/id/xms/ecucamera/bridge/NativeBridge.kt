@@ -72,14 +72,4 @@ object NativeBridge {
      * @return Analysis result string
      */
     external fun analyzeFrame(buffer: ByteBuffer, length: Int, width: Int, height: Int, stride: Int): String
-    
-    /**
-     * Analyze frame data using Rust image processor with byte array (fallback for hardware buffer issues)
-     * @param data Byte array containing YUV frame data (Y-plane)
-     * @param width Frame width
-     * @param height Frame height
-     * @param stride Row stride (bytes per row including padding)
-     * @return Analysis result string
-     */
-    external fun analyzeFrameArray(data: ByteArray, width: Int, height: Int, stride: Int): String
 }
