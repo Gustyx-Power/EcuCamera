@@ -1,9 +1,11 @@
 package id.xms.ecucamera.engine.pipeline
 
+import android.graphics.Rect
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CameraMetadata
+import android.os.Build
 import android.util.Log
 import android.view.Surface
 
@@ -12,28 +14,45 @@ class RequestManager {
     companion object {
         private const val TAG = "ECU_PIPELINE"
     }
+    
     fun createPreviewRequest(
         session: CameraCaptureSession, 
         target: Surface
     ): CaptureRequest {
         
-        Log.d(TAG, "ECU_PIPELINE: Building Preview Request")     
+        Log.d(TAG, "Building Preview Request")     
         val requestBuilder = session.device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
         requestBuilder.addTarget(target)
         requestBuilder.apply {
-            // Set control mode to AUTO for intelligent scene analysis
             set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
-            
-            // Set autofocus to CONTINUOUS_PICTURE for smooth focus tracking
             set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
-            
-            // Additional ECU defaults for optimal preview
             set(CaptureRequest.CONTROL_AE_MODE, CameraMetadata.CONTROL_AE_MODE_ON)
             set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_AUTO)
         }
         
         Log.d(TAG, "Preview request configured with ECU defaults")
         return requestBuilder.build()
+    }
+    
+    fun updateZoom(
+        requestBuilder: CaptureRequest.Builder,
+        zoomRatio: Float,
+        activeRect: Rect
+    ) {
+        Log.d(TAG, "Updating zoom: ratio=$zoomRatio, activeRect=$activeRect")
+        
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                requestBuilder.set(CaptureRequest.CONTROL_ZOOM_RATIO, zoomRatio)
+                Log.d(TAG, "Using CONTROL_ZOOM_RATIO for zoom $zoomRatio")
+            } catch (e: Exception) {
+                Log.w(TAG, "CONTROL_ZOOM_RATIO not supported, falling back to crop region")
+                requestBuilder.set(CaptureRequest.SCALER_CROP_REGION, activeRect)
+            }
+        } else {
+            requestBuilder.set(CaptureRequest.SCALER_CROP_REGION, activeRect)
+            Log.d(TAG, "Using SCALER_CROP_REGION for zoom")
+        }
     }
    
     fun updateManualControl(
@@ -50,7 +69,7 @@ class RequestManager {
         target: Surface
     ): CaptureRequest {
         
-        Log.d(TAG, "ECU_PIPELINE: Building Capture Request")
+        Log.d(TAG, "Building Capture Request")
         
         val requestBuilder = session.device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
         requestBuilder.addTarget(target)
@@ -58,7 +77,7 @@ class RequestManager {
         requestBuilder.apply {
             set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
             set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
-            set(CaptureRequest.JPEG_QUALITY, 95.toByte()) // High JPEG quality
+            set(CaptureRequest.JPEG_QUALITY, 95.toByte())
         }
         
         return requestBuilder.build()

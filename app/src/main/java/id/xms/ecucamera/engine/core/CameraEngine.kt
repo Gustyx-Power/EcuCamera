@@ -20,11 +20,9 @@ class CameraEngine(private val context: Context) {
         private const val TAG = "ECU_ENGINE"
     }
     
-    // StateFlow for camera state management
     private val _cameraState = MutableStateFlow<CameraState>(CameraState.Closed)
     val cameraState: StateFlow<CameraState> = _cameraState.asStateFlow()
     
-    // Camera system components
     private val cameraManager: CameraManager by lazy {
         context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
     }
@@ -33,18 +31,15 @@ class CameraEngine(private val context: Context) {
     private var captureSession: CameraCaptureSession? = null
     private var currentCameraId: String? = null
     
-    // Pipeline components
     private val sessionManager = SessionManager()
     private val requestManager = RequestManager()
+    private val lensManager = LensManager()
     
-    // Test components for backend validation
     private var testImageReader: ImageReader? = null
     
-    // Background thread for camera operations
     private val backgroundThread = HandlerThread("CameraEngineThread").apply { start() }
     private val backgroundHandler = Handler(backgroundThread.looper)
     
-    // Coroutine scope for async operations
     private val engineScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     
     /**
@@ -158,10 +153,33 @@ class CameraEngine(private val context: Context) {
         }
     }
     
-    /**
-     * Start preview using the new pipeline architecture
-     * Creates a dummy ImageReader for backend testing (no UI yet)
-     */
+    fun switchCamera(newId: String) {
+        engineScope.launch {
+            val oldId = currentCameraId
+            
+            if (newId == oldId) {
+                Log.d(TAG, "Camera switch ignored - already using ID $newId")
+                return@launch
+            }
+            
+            Log.d(TAG, "ECU_LENS: Switching from ID $oldId to $newId")
+            
+            closeCamera()
+            
+            while (_cameraState.value !is CameraState.Closed) {
+                delay(50)
+            }
+            
+            openCamera(newId)
+            
+            while (_cameraState.value !is CameraState.Open) {
+                delay(50)
+            }
+            
+            startPreview()
+        }
+    }
+    
     fun startPreview() {
         engineScope.launch {
             try {

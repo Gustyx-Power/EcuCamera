@@ -24,6 +24,7 @@ import id.xms.ecucamera.engine.core.CameraEngine
 import id.xms.ecucamera.engine.core.CameraState
 import id.xms.ecucamera.engine.probe.HardwareProbe
 import id.xms.ecucamera.engine.pipeline.PipelineValidator
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -49,7 +50,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
-        Log.d(TAG, "EcuCamera : The Pipeline & Request Manager - Starting")
+        Log.d(TAG, "EcuCamera Phase 5: Lens Manager & Zoom Logic - Starting")
         
         // Initialize engine components
         cameraEngine = CameraEngine(this)
@@ -116,6 +117,12 @@ class MainActivity : ComponentActivity() {
                 // Open the back camera
                 cameraEngine.openCamera("0")
                 
+                lifecycleScope.launch {
+                    delay(3000)
+                    Log.d(TAG, "TEST: Switching to Ultra-Wide (ID 2)")
+                    cameraEngine.switchCamera("2")
+                }
+                
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to start camera engine", e)
             }
@@ -167,7 +174,7 @@ fun EngineStatusScreen() {
         Spacer(modifier = Modifier.height(8.dp))
         
         Text(
-            text = "The Pipeline & Request Manager",
+            text = "Phase 5: Lens Manager & Zoom Logic",
             style = MaterialTheme.typography.titleMedium,
             color = Color.Gray,
             textAlign = TextAlign.Center
