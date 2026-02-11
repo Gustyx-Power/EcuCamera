@@ -220,24 +220,14 @@ class CameraEngine(private val context: Context) {
                             val stride = plane.rowStride
                             val pixelStride = plane.pixelStride
                             
-                            // CRITICAL: Hardware buffers can have corrupted capacity metadata
-                            // Copy to a byte array instead of using DirectByteBuffer
-                            val dataSize = stride * image.height
-                            val data = ByteArray(dataSize)
+                            // Use DirectByteBuffer directly - no copying needed
+                            val buffer = plane.buffer
+                            val length = buffer.remaining()
+                            
+                            Log.d("ECU_DEBUG", "Buffer info: length=$length, stride=$stride")
                             
                             try {
-                                val buffer = plane.buffer
-                                buffer.rewind()
-                                buffer.get(data, 0, minOf(dataSize, buffer.remaining()))
-                                
-                                Log.d("ECU_DEBUG", "Buffer copied: ${data.size} bytes")
-                            } catch (e: Exception) {
-                                Log.e("ECU_ERROR", "Buffer read failed: ${e.message}")
-                                return@setOnImageAvailableListener
-                            }
-                            
-                            try {
-                                val result = NativeBridge.analyzeFrameArray(data, image.width, image.height, stride)
+                                val result = NativeBridge.analyzeFrame(buffer, length, image.width, image.height, stride)
                                 Log.d("ECU_RUST", "Result: $result")
                             } catch (e: Exception) {
                                 Log.e("ECU_ERROR", "Rust call failed: ${e.message}", e)
