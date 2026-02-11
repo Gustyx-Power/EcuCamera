@@ -8,7 +8,19 @@ import android.view.Surface
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.Modifier
 import androidx.compose.material3.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.*
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
@@ -16,6 +28,7 @@ import id.xms.ecucamera.engine.core.CameraEngine
 import id.xms.ecucamera.engine.core.CameraState
 import id.xms.ecucamera.engine.probe.HardwareProbe
 import id.xms.ecucamera.engine.pipeline.PipelineValidator
+import id.xms.ecucamera.ui.components.HistogramView
 import id.xms.ecucamera.ui.screens.viewfinder.ViewfinderScreen
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -28,6 +41,14 @@ class MainActivity : ComponentActivity() {
     lateinit var cameraEngine: CameraEngine
     private lateinit var hardwareProbe: HardwareProbe
     private var currentSurface: Surface? = null
+    
+    // Histogram data state
+    private var histogramData by mutableStateOf(listOf<Int>())
+    
+    // Manual exposure control state
+    private var isManualMode by mutableStateOf(false)
+    private var isoSliderValue by mutableStateOf(0.0f)
+    private var shutterSliderValue by mutableStateOf(0.5f)
     
     // Permission launcher
     private val cameraPermissionLauncher = registerForActivityResult(
@@ -55,16 +76,85 @@ class MainActivity : ComponentActivity() {
         
         setContent {
             MaterialTheme {
-                ViewfinderScreen(
-                    onSurfaceReady = { surface ->
-                        currentSurface = surface
-                        startCameraEngine()
-                    },
-                    onSurfaceDestroyed = {
-                        currentSurface = null
-                        cameraEngine.closeCamera()
+                Box(modifier = Modifier.fillMaxSize()) {
+                    ViewfinderScreen(
+                        onSurfaceReady = { surface ->
+                            currentSurface = surface
+                            startCameraEngine()
+                        },
+                        onSurfaceDestroyed = {
+                            currentSurface = null
+                            cameraEngine.closeCamera()
+                        }
+                    )
+                    
+                    // Overlay histogram view
+                    HistogramView(
+                        data = histogramData,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                    
+                    // Manual exposure controls overlay
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .padding(16.dp)
+                            .fillMaxWidth()
+                    ) {
+                        // Auto/Manual toggle
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = if (isManualMode) "Manual" else "Auto",
+                                color = androidx.compose.ui.graphics.Color.White
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Switch(
+                                checked = isManualMode,
+                                onCheckedChange = { enabled ->
+                                    isManualMode = enabled
+                                    cameraEngine.setManualMode(enabled)
+                                }
+                            )
+                        }
+                        
+                        // Manual controls (visible only in manual mode)
+                        if (isManualMode) {
+                            Spacer(modifier = Modifier.height(16.dp))
+                            
+                            // ISO Slider
+                            Text(
+                                text = "ISO",
+                                color = androidx.compose.ui.graphics.Color.White
+                            )
+                            Slider(
+                                value = isoSliderValue,
+                                onValueChange = { value ->
+                                    isoSliderValue = value
+                                    cameraEngine.updateISO(value)
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                            
+                            Spacer(modifier = Modifier.height(8.dp))
+                            
+                            // Shutter Speed Slider
+                            Text(
+                                text = "Shutter Speed",
+                                color = androidx.compose.ui.graphics.Color.White
+                            )
+                            Slider(
+                                value = shutterSliderValue,
+                                onValueChange = { value ->
+                                    shutterSliderValue = value
+                                    cameraEngine.updateShutter(value)
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
                     }
-                )
+                }
             }
         }
     }
@@ -111,7 +201,17 @@ class MainActivity : ComponentActivity() {
                         
                         if (state is CameraState.Open) {
                             Log.d(TAG, "Camera opened, starting preview...")
-                            cameraEngine.startPreview(surface)
+                            cameraEngine.startPreview(surface) { csvData ->
+                                // Parse CSV histogram data and update UI
+                                try {
+                                    val histogramList = csvData.split(",").mapNotNull { it.toIntOrNull() }
+                                    if (histogramList.size == 256) {
+                                        histogramData = histogramList
+                                    }
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "Failed to parse histogram data: $csvData", e)
+                                }
+                            }
                         }
                     }
                 }
@@ -121,7 +221,17 @@ class MainActivity : ComponentActivity() {
                 lifecycleScope.launch {
                     delay(3000)
                     Log.d(TAG, "TEST: Switching to Ultra-Wide (ID 2)")
-                    cameraEngine.switchCamera("2", surface)
+                    cameraEngine.switchCamera("2", surface) { csvData ->
+                        // Parse CSV histogram data and update UI
+                        try {
+                            val histogramList = csvData.split(",").mapNotNull { it.toIntOrNull() }
+                            if (histogramList.size == 256) {
+                                histogramData = histogramList
+                            }
+                        } catch (e: Exception) {
+                            Log.e(TAG, "Failed to parse histogram data: $csvData", e)
+                        }
+                    }
                 }
                 
             } catch (e: Exception) {
