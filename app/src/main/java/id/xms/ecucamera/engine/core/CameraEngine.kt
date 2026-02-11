@@ -11,6 +11,7 @@ import android.util.Log
 import android.view.Surface
 import id.xms.ecucamera.bridge.NativeBridge
 import id.xms.ecucamera.engine.controller.ExposureController
+import id.xms.ecucamera.engine.controller.FocusController
 import id.xms.ecucamera.engine.pipeline.SessionManager
 import id.xms.ecucamera.engine.pipeline.RequestManager
 import kotlinx.coroutines.*
@@ -40,11 +41,16 @@ class CameraEngine(private val context: Context) {
     private val requestManager = RequestManager()
     private val lensManager = LensManager()
     private val exposureController = ExposureController()
+    private val focusController = FocusController()
     
     // Manual exposure control variables
     private var isManualMode = false
     private var currentIso = 100
     private var currentExpTime = 10_000_000L // 1/100s in nanoseconds
+    
+    // Manual focus control variables
+    private var isManualFocusMode = false
+    private var currentFocusDistance = 0.0f
     
     private var testImageReader: ImageReader? = null
     private var imageReader: ImageReader? = null
@@ -140,9 +146,12 @@ class CameraEngine(private val context: Context) {
                 try {
                     val characteristics = cameraManager.getCameraCharacteristics(cameraId)
                     exposureController.setRanges(characteristics)
-                    Log.d(TAG, "Exposure Controller initialized: ${exposureController.getISORangeString()}, ${exposureController.getExposureRangeString()}")
+                    focusController.setCapabilities(characteristics)
+                    Log.d(TAG, "Controllers initialized:")
+                    Log.d(TAG, "  ${exposureController.getISORangeString()}, ${exposureController.getExposureRangeString()}")
+                    Log.d(TAG, "  ${focusController.getFocusRangeString()}")
                 } catch (e: Exception) {
-                    Log.e(TAG, "Failed to initialize exposure controller", e)
+                    Log.e(TAG, "Failed to initialize controllers", e)
                 }
                 
                 // Open camera on background thread
@@ -178,7 +187,7 @@ class CameraEngine(private val context: Context) {
         }
     }
     
-    fun switchCamera(newId: String, viewFinderSurface: Surface? = null, onAnalysis: ((String) -> Unit)? = null) {
+    fun switchCamera(newId: String, viewFinderSurface: Surface? = null, onAnalysis: ((String) -> Unit)? = null, onFocusPeaking: ((String) -> Unit)? = null) {
         engineScope.launch {
             val oldId = currentCameraId
             
@@ -202,12 +211,12 @@ class CameraEngine(private val context: Context) {
             }
             
             viewFinderSurface?.let { surface ->
-                startPreview(surface, onAnalysis)
+                startPreview(surface, onAnalysis, onFocusPeaking)
             }
         }
     }
     
-    suspend fun startPreview(viewFinderSurface: Surface, onAnalysis: ((String) -> Unit)? = null) {
+    suspend fun startPreview(viewFinderSurface: Surface, onAnalysis: ((String) -> Unit)? = null, onFocusPeaking: ((String) -> Unit)? = null) {
         previewJob?.cancel()
         previewJob = engineScope.launch {
             try {
@@ -250,10 +259,21 @@ class CameraEngine(private val context: Context) {
                             
                             try {
                                 val result = NativeBridge.analyzeFrame(buffer, length, image.width, image.height, stride)
-                                Log.d("ECU_RUST", "Result: $result")
+                                Log.d("ECU_RUST", "Histogram Result: $result")
                                 
                                 // Call the analysis callback if provided
                                 onAnalysis?.invoke(result)
+                                
+                                // Process focus peaking if in manual focus mode
+                                if (isManualFocusMode) {
+                                    try {
+                                        val focusResult = NativeBridge.analyzeFocusPeaking(buffer, length, image.width, image.height, stride)
+                                        Log.d("ECU_FOCUS", "Focus Peaking Result: $focusResult")
+                                        onFocusPeaking?.invoke(focusResult)
+                                    } catch (e: Exception) {
+                                        Log.e("ECU_ERROR", "Focus peaking failed: ${e.message}", e)
+                                    }
+                                }
                             } catch (e: Exception) {
                                 Log.e("ECU_ERROR", "Rust call failed: ${e.message}", e)
                             }
@@ -292,6 +312,13 @@ class CameraEngine(private val context: Context) {
                                     builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
                                 }
                                 
+                                // Apply focus settings
+                                if (isManualFocusMode) {
+                                    focusController.applyManualFocus(builder, currentFocusDistance)
+                                } else {
+                                    focusController.applyAutoFocus(builder)
+                                }
+                                
                                 builder.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
                                 
                                 session.setRepeatingRequest(
@@ -325,6 +352,45 @@ class CameraEngine(private val context: Context) {
         }
     }
     
+    /**
+     * Toggle between auto and manual focus mode
+     */
+    fun setManualFocusMode(enabled: Boolean) {
+        engineScope.launch {
+            isManualFocusMode = enabled
+            Log.d(TAG, "Manual focus mode: ${if (enabled) "ENABLED" else "DISABLED"}")
+            updateRepeatingRequest()
+        }
+    }
+    
+    /**
+     * Update focus distance from slider (0.0 - 1.0)
+     */
+    fun updateFocus(sliderValue: Float) {
+        engineScope.launch {
+            currentFocusDistance = focusController.calculateFocusDistance(sliderValue)
+            Log.d(TAG, "Focus distance updated to: $currentFocusDistance diopters")
+            if (isManualFocusMode) {
+                updateRepeatingRequest()
+            }
+        }
+    }
+    
+    /**
+     * Get focus controller for UI access
+     */
+    fun getFocusController(): FocusController = focusController
+    
+    /**
+     * Check if manual focus is supported
+     */
+    fun isManualFocusSupported(): Boolean = focusController.isManualFocusSupported()
+    
+    /**
+     * Get current manual focus mode state
+     */
+    fun isInManualFocusMode(): Boolean = isManualFocusMode
+
     /**
      * Toggle between auto and manual exposure mode
      */
@@ -387,6 +453,13 @@ class CameraEngine(private val context: Context) {
                 // Set auto exposure mode
                 builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
                 Log.d(TAG, "Auto exposure mode enabled")
+            }
+            
+            // Apply focus settings
+            if (isManualFocusMode) {
+                focusController.applyManualFocus(builder, currentFocusDistance)
+            } else {
+                focusController.applyAutoFocus(builder)
             }
             
             builder.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)

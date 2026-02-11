@@ -72,4 +72,15 @@ object NativeBridge {
      * @return Analysis result string
      */
     external fun analyzeFrame(buffer: ByteBuffer, length: Int, width: Int, height: Int, stride: Int): String
+    
+    /**
+     * Analyze frame for focus peaking using Rust edge detection
+     * @param buffer Direct ByteBuffer containing YUV frame data (Y-plane)
+     * @param length Explicit buffer length
+     * @param width Frame width
+     * @param height Frame height
+     * @param stride Row stride (bytes per row including padding)
+     * @return CSV string of in-focus block indices
+     */
+    external fun analyzeFocusPeaking(buffer: ByteBuffer, length: Int, width: Int, height: Int, stride: Int): String
 }

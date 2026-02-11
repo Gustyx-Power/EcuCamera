@@ -29,6 +29,7 @@ import id.xms.ecucamera.engine.core.CameraState
 import id.xms.ecucamera.engine.probe.HardwareProbe
 import id.xms.ecucamera.engine.pipeline.PipelineValidator
 import id.xms.ecucamera.ui.components.HistogramView
+import id.xms.ecucamera.ui.components.PeakingOverlay
 import id.xms.ecucamera.ui.screens.viewfinder.ViewfinderScreen
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -49,6 +50,11 @@ class MainActivity : ComponentActivity() {
     private var isManualMode by mutableStateOf(false)
     private var isoSliderValue by mutableStateOf(0.0f)
     private var shutterSliderValue by mutableStateOf(0.5f)
+    
+    // Manual focus control state
+    private var isManualFocusMode by mutableStateOf(false)
+    private var focusSliderValue by mutableStateOf(0.0f)
+    private var focusBlocks by mutableStateOf(listOf<Int>())
     
     // Permission launcher
     private val cameraPermissionLauncher = registerForActivityResult(
@@ -94,6 +100,14 @@ class MainActivity : ComponentActivity() {
                         modifier = Modifier.fillMaxSize()
                     )
                     
+                    // Focus peaking overlay (visible only in manual focus mode)
+                    if (isManualFocusMode) {
+                        PeakingOverlay(
+                            focusBlocks = focusBlocks,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                    
                     // Manual exposure controls overlay
                     Column(
                         modifier = Modifier
@@ -101,12 +115,12 @@ class MainActivity : ComponentActivity() {
                             .padding(16.dp)
                             .fillMaxWidth()
                     ) {
-                        // Auto/Manual toggle
+                        // Auto/Manual Exposure toggle
                         Row(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = if (isManualMode) "Manual" else "Auto",
+                                text = if (isManualMode) "Manual Exp" else "Auto Exp",
                                 color = androidx.compose.ui.graphics.Color.White
                             )
                             Spacer(modifier = Modifier.width(8.dp))
@@ -119,9 +133,27 @@ class MainActivity : ComponentActivity() {
                             )
                         }
                         
-                        // Manual controls (visible only in manual mode)
+                        // Auto/Manual Focus toggle
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = if (isManualFocusMode) "Manual Focus" else "Auto Focus",
+                                color = androidx.compose.ui.graphics.Color.White
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Switch(
+                                checked = isManualFocusMode,
+                                onCheckedChange = { enabled ->
+                                    isManualFocusMode = enabled
+                                    cameraEngine.setManualFocusMode(enabled)
+                                }
+                            )
+                        }
+                        
+                        // Manual exposure controls (visible only in manual mode)
                         if (isManualMode) {
-                            Spacer(modifier = Modifier.height(16.dp))
+                            Spacer(modifier = Modifier.height(8.dp))
                             
                             // ISO Slider
                             Text(
@@ -137,7 +169,7 @@ class MainActivity : ComponentActivity() {
                                 modifier = Modifier.fillMaxWidth()
                             )
                             
-                            Spacer(modifier = Modifier.height(8.dp))
+                            Spacer(modifier = Modifier.height(4.dp))
                             
                             // Shutter Speed Slider
                             Text(
@@ -149,6 +181,25 @@ class MainActivity : ComponentActivity() {
                                 onValueChange = { value ->
                                     shutterSliderValue = value
                                     cameraEngine.updateShutter(value)
+                                },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                        
+                        // Manual focus controls (visible only in manual focus mode)
+                        if (isManualFocusMode) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            
+                            // Focus Slider
+                            Text(
+                                text = "Focus Distance",
+                                color = androidx.compose.ui.graphics.Color.White
+                            )
+                            Slider(
+                                value = focusSliderValue,
+                                onValueChange = { value ->
+                                    focusSliderValue = value
+                                    cameraEngine.updateFocus(value)
                                 },
                                 modifier = Modifier.fillMaxWidth()
                             )
@@ -201,17 +252,33 @@ class MainActivity : ComponentActivity() {
                         
                         if (state is CameraState.Open) {
                             Log.d(TAG, "Camera opened, starting preview...")
-                            cameraEngine.startPreview(surface) { csvData ->
-                                // Parse CSV histogram data and update UI
-                                try {
-                                    val histogramList = csvData.split(",").mapNotNull { it.toIntOrNull() }
-                                    if (histogramList.size == 256) {
-                                        histogramData = histogramList
+                            cameraEngine.startPreview(surface, 
+                                onAnalysis = { csvData ->
+                                    // Parse CSV histogram data and update UI
+                                    try {
+                                        val histogramList = csvData.split(",").mapNotNull { it.toIntOrNull() }
+                                        if (histogramList.size == 256) {
+                                            histogramData = histogramList
+                                        }
+                                    } catch (e: Exception) {
+                                        Log.e(TAG, "Failed to parse histogram data: $csvData", e)
                                     }
-                                } catch (e: Exception) {
-                                    Log.e(TAG, "Failed to parse histogram data: $csvData", e)
+                                },
+                                onFocusPeaking = { csvData ->
+                                    // Parse CSV focus peaking data and update UI
+                                    try {
+                                        if (csvData.isNotEmpty()) {
+                                            val blockList = csvData.split(",").mapNotNull { it.toIntOrNull() }
+                                            focusBlocks = blockList
+                                        } else {
+                                            focusBlocks = listOf()
+                                        }
+                                    } catch (e: Exception) {
+                                        Log.e(TAG, "Failed to parse focus peaking data: $csvData", e)
+                                        focusBlocks = listOf()
+                                    }
                                 }
-                            }
+                            )
                         }
                     }
                 }
@@ -221,17 +288,33 @@ class MainActivity : ComponentActivity() {
                 lifecycleScope.launch {
                     delay(3000)
                     Log.d(TAG, "TEST: Switching to Ultra-Wide (ID 2)")
-                    cameraEngine.switchCamera("2", surface) { csvData ->
-                        // Parse CSV histogram data and update UI
-                        try {
-                            val histogramList = csvData.split(",").mapNotNull { it.toIntOrNull() }
-                            if (histogramList.size == 256) {
-                                histogramData = histogramList
+                    cameraEngine.switchCamera("2", surface,
+                        onAnalysis = { csvData ->
+                            // Parse CSV histogram data and update UI
+                            try {
+                                val histogramList = csvData.split(",").mapNotNull { it.toIntOrNull() }
+                                if (histogramList.size == 256) {
+                                    histogramData = histogramList
+                                }
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Failed to parse histogram data: $csvData", e)
                             }
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Failed to parse histogram data: $csvData", e)
+                        },
+                        onFocusPeaking = { csvData ->
+                            // Parse CSV focus peaking data and update UI
+                            try {
+                                if (csvData.isNotEmpty()) {
+                                    val blockList = csvData.split(",").mapNotNull { it.toIntOrNull() }
+                                    focusBlocks = blockList
+                                } else {
+                                    focusBlocks = listOf()
+                                }
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Failed to parse focus peaking data: $csvData", e)
+                                focusBlocks = listOf()
+                            }
                         }
-                    }
+                    )
                 }
                 
             } catch (e: Exception) {
