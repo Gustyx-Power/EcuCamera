@@ -1,6 +1,7 @@
 package id.xms.ecucamera.bridge
 
 import android.util.Log
+import java.nio.ByteBuffer
 
 /**
  * Native bridge for ECU Camera engine communication.
@@ -11,12 +12,14 @@ object NativeBridge {
     
     init {
         try {
-            // Load the native C++ bridge library
+            System.loadLibrary("ecucamera_engine")
+            Log.i(TAG, "Rust library loaded successfully")
+            
             System.loadLibrary("ecu-bridge")
             Log.i(TAG, "Native bridge library loaded successfully")
         } catch (e: UnsatisfiedLinkError) {
-            Log.e(TAG, "Failed to load native bridge library", e)
-            throw RuntimeException("Failed to load native bridge library", e)
+            Log.e(TAG, "Failed to load native libraries", e)
+            throw RuntimeException("Failed to load native libraries", e)
         }
     }
     
@@ -58,4 +61,25 @@ object NativeBridge {
             false
         }
     }
+    
+    /**
+     * Analyze frame data using Rust image processor with zero-copy direct buffer
+     * @param buffer Direct ByteBuffer containing YUV frame data (Y-plane)
+     * @param length Explicit buffer length (avoids hardware buffer capacity issues)
+     * @param width Frame width
+     * @param height Frame height
+     * @param stride Row stride (bytes per row including padding)
+     * @return Analysis result string
+     */
+    external fun analyzeFrame(buffer: ByteBuffer, length: Int, width: Int, height: Int, stride: Int): String
+    
+    /**
+     * Analyze frame data using Rust image processor with byte array (fallback for hardware buffer issues)
+     * @param data Byte array containing YUV frame data (Y-plane)
+     * @param width Frame width
+     * @param height Frame height
+     * @param stride Row stride (bytes per row including padding)
+     * @return Analysis result string
+     */
+    external fun analyzeFrameArray(data: ByteArray, width: Int, height: Int, stride: Int): String
 }

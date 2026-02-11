@@ -3,16 +3,20 @@ package id.xms.ecucamera.engine.core
 import android.content.Context
 import android.graphics.ImageFormat
 import android.hardware.camera2.*
+import android.media.Image
 import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
+import android.view.Surface
+import id.xms.ecucamera.bridge.NativeBridge
 import id.xms.ecucamera.engine.pipeline.SessionManager
 import id.xms.ecucamera.engine.pipeline.RequestManager
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.nio.ByteBuffer
 
 class CameraEngine(private val context: Context) {
     
@@ -36,6 +40,8 @@ class CameraEngine(private val context: Context) {
     private val lensManager = LensManager()
     
     private var testImageReader: ImageReader? = null
+    private var imageReader: ImageReader? = null
+    private var previewJob: Job? = null
     
     private val backgroundThread = HandlerThread("CameraEngineThread").apply { start() }
     private val backgroundHandler = Handler(backgroundThread.looper)
@@ -153,7 +159,7 @@ class CameraEngine(private val context: Context) {
         }
     }
     
-    fun switchCamera(newId: String) {
+    fun switchCamera(newId: String, viewFinderSurface: Surface? = null) {
         engineScope.launch {
             val oldId = currentCameraId
             
@@ -176,12 +182,15 @@ class CameraEngine(private val context: Context) {
                 delay(50)
             }
             
-            startPreview()
+            viewFinderSurface?.let { surface ->
+                startPreview(surface)
+            }
         }
     }
     
-    fun startPreview() {
-        engineScope.launch {
+    suspend fun startPreview(viewFinderSurface: Surface) {
+        previewJob?.cancel()
+        previewJob = engineScope.launch {
             try {
                 val device = cameraDevice
                 if (device == null) {
@@ -197,34 +206,91 @@ class CameraEngine(private val context: Context) {
                 
                 Log.d(TAG, "Starting preview for camera $currentCameraId")
                 
-                // Create dummy ImageReader for backend testing (640x480, YUV_420_888)
-                testImageReader = ImageReader.newInstance(640, 480, ImageFormat.YUV_420_888, 2)
-                val surface = testImageReader!!.surface
+                this@CameraEngine.imageReader = ImageReader.newInstance(640, 480, ImageFormat.YUV_420_888, 2)
                 
-                Log.d(TAG, "Created test ImageReader: 640x480, YUV_420_888")
+                this@CameraEngine.imageReader!!.setOnImageAvailableListener({ reader ->
+                    try {
+                        val safeReader = this@CameraEngine.imageReader ?: return@setOnImageAvailableListener
+                        val image = safeReader.acquireLatestImage() ?: return@setOnImageAvailableListener
+                        
+                        try {
+                            Log.d("ECU_DEBUG", "Frame received! Timestamp: ${image.timestamp}")
+                            
+                            val plane = image.planes[0]
+                            val stride = plane.rowStride
+                            val pixelStride = plane.pixelStride
+                            
+                            // CRITICAL: Hardware buffers can have corrupted capacity metadata
+                            // Copy to a byte array instead of using DirectByteBuffer
+                            val dataSize = stride * image.height
+                            val data = ByteArray(dataSize)
+                            
+                            try {
+                                val buffer = plane.buffer
+                                buffer.rewind()
+                                buffer.get(data, 0, minOf(dataSize, buffer.remaining()))
+                                
+                                Log.d("ECU_DEBUG", "Buffer copied: ${data.size} bytes")
+                            } catch (e: Exception) {
+                                Log.e("ECU_ERROR", "Buffer read failed: ${e.message}")
+                                return@setOnImageAvailableListener
+                            }
+                            
+                            try {
+                                val result = NativeBridge.analyzeFrameArray(data, image.width, image.height, stride)
+                                Log.d("ECU_RUST", "Result: $result")
+                            } catch (e: Exception) {
+                                Log.e("ECU_ERROR", "Rust call failed: ${e.message}", e)
+                            }
+                            
+                        } catch (e: Exception) {
+                            Log.e("ECU_ERROR", "Frame processing failed", e)
+                        } finally {
+                            image.close()
+                        }
+                        
+                    } catch (e: Exception) {
+                        Log.e("ECU_ERROR", "Image listener error", e)
+                    }
+                }, backgroundHandler)
                 
-                // Use SessionManager to create capture session
-                captureSession = sessionManager.createSession(
-                    device = device,
-                    targets = listOf(surface),
-                    backgroundHandler = backgroundHandler
-                )
+                val targets = listOf(viewFinderSurface, this@CameraEngine.imageReader!!.surface)
                 
-                // Use RequestManager to create preview request
-                val previewRequest = requestManager.createPreviewRequest(
-                    session = captureSession!!,
-                    target = surface
-                )
-                
-                // Start repeating request
-                captureSession!!.setRepeatingRequest(
-                    previewRequest,
-                    null, // No capture callback for now
+                device.createCaptureSession(
+                    targets,
+                    object : CameraCaptureSession.StateCallback() {
+                        override fun onConfigured(session: CameraCaptureSession) {
+                            captureSession = session
+                            
+                            try {
+                                val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+                                builder.addTarget(viewFinderSurface)
+                                builder.addTarget(this@CameraEngine.imageReader!!.surface)
+                                builder.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
+                                
+                                session.setRepeatingRequest(
+                                    builder.build(),
+                                    null,
+                                    backgroundHandler
+                                )
+                                
+                                updateState(CameraState.Configured)
+                                Log.d(TAG, "ECU_ENGINE: Preview Running (Dual Output - Safe Mode)")
+                                
+                            } catch (e: IllegalStateException) {
+                                Log.w(TAG, "Session closed during preview start")
+                            } catch (e: CameraAccessException) {
+                                Log.w(TAG, "Camera access error during preview start")
+                            }
+                        }
+                        
+                        override fun onConfigureFailed(session: CameraCaptureSession) {
+                            Log.e(TAG, "Camera Session CONFIGURATION FAILED")
+                            updateState(CameraState.Error("Session configuration failed"))
+                        }
+                    },
                     backgroundHandler
                 )
-                
-                updateState(CameraState.Configured)
-                Log.d(TAG, "ECU_ENGINE: Preview Running (Backend Only)")
                 
             } catch (e: Exception) {
                 Log.e(TAG, "Error starting preview", e)
@@ -246,11 +312,17 @@ class CameraEngine(private val context: Context) {
      * Clean up camera resources
      */
     private fun cleanup() {
+        previewJob?.cancel()
+        previewJob = null
+        
         captureSession?.close()
         captureSession = null
         
         testImageReader?.close()
         testImageReader = null
+        
+        imageReader?.close()
+        imageReader = null
         
         cameraDevice?.close()
         cameraDevice = null
