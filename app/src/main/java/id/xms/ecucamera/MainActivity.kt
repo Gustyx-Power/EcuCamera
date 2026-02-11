@@ -1,187 +1,195 @@
 package id.xms.ecucamera
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.tooling.preview.Preview
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import id.xms.ecucamera.bridge.NativeBridge
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
+import id.xms.ecucamera.engine.core.CameraEngine
+import id.xms.ecucamera.engine.core.CameraState
+import id.xms.ecucamera.engine.probe.HardwareProbe
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     companion object {
-        private const val TAG = "MainActivity"
+        private const val TAG = "ECU_MAIN"
+    }
+    
+    private lateinit var cameraEngine: CameraEngine
+    private lateinit var hardwareProbe: HardwareProbe
+    
+    // Permission launcher
+    private val cameraPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            Log.d(TAG, "✅ Camera permission GRANTED")
+            startCameraEngine()
+        } else {
+            Log.e(TAG, "❌ Camera permission DENIED")
+        }
     }
     
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
-        // Test the native bridge immediately
-        testNativeBridge()
+        Log.d(TAG, "🚀 EcuCamera Phase 3: The Silent Engine - Starting")
+        
+        // Initialize engine components
+        cameraEngine = CameraEngine(this)
+        hardwareProbe = HardwareProbe(this)
+        
+        // Request camera permission immediately
+        checkAndRequestCameraPermission()
         
         setContent {
-            EcuCameraTheme {
+            MaterialTheme {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
-                    color = MaterialTheme.colorScheme.background
+                    color = Color.Black
                 ) {
-                    EcuCameraMainScreen()
+                    EngineStatusScreen()
                 }
             }
         }
     }
     
-    private fun testNativeBridge() {
-        try {
-            Log.i(TAG, "Testing native bridge connection...")
-            
-            if (NativeBridge.isNativeBridgeReady()) {
-                val rustMessage = NativeBridge.stringFromRust()
-                val engineStatus = NativeBridge.getEngineStatus()
-                val initResult = NativeBridge.initializeEngine()
-                
-                Log.i(TAG, "✅ Native Bridge Test Results:")
-                Log.i(TAG, "   Rust Message: $rustMessage")
-                Log.i(TAG, "   Engine Status: $engineStatus")
-                Log.i(TAG, "   Init Result: $initResult")
-            } else {
-                Log.e(TAG, "❌ Native bridge is not ready!")
+    private fun checkAndRequestCameraPermission() {
+        when (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)) {
+            PackageManager.PERMISSION_GRANTED -> {
+                Log.d(TAG, "✅ Camera permission already granted")
+                startCameraEngine()
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ Native bridge test failed", e)
+            else -> {
+                Log.d(TAG, "📋 Requesting camera permission...")
+                cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+            }
         }
+    }
+    
+    private fun startCameraEngine() {
+        lifecycleScope.launch {
+            try {
+                Log.d(TAG, "🔍 Starting hardware probe...")
+                hardwareProbe.dumpCapabilities()
+                
+                Log.d(TAG, "🎥 Starting camera engine...")
+                cameraEngine.openCamera("0") // Back camera
+                
+            } catch (e: Exception) {
+                Log.e(TAG, "🔴 Failed to start camera engine", e)
+            }
+        }
+    }
+    
+    override fun onDestroy() {
+        super.onDestroy()
+        Log.d(TAG, "🛑 Destroying MainActivity")
+        cameraEngine.destroy()
     }
 }
 
 @Composable
-fun EcuCameraMainScreen() {
-    var bridgeStatus by remember { mutableStateOf("Testing...") }
-    var rustMessage by remember { mutableStateOf("") }
-    var engineStatus by remember { mutableStateOf("") }
-    var initResult by remember { mutableStateOf("") }
-    
-    LaunchedEffect(Unit) {
-        try {
-            if (NativeBridge.isNativeBridgeReady()) {
-                bridgeStatus = "✅ Bridge Connected"
-                rustMessage = NativeBridge.stringFromRust()
-                engineStatus = NativeBridge.getEngineStatus()
-                initResult = NativeBridge.initializeEngine()
-            } else {
-                bridgeStatus = "❌ Bridge Failed"
-            }
-        } catch (e: Exception) {
-            bridgeStatus = "❌ Error: ${e.message}"
-        }
-    }
+fun EngineStatusScreen() {
+    var cameraState by remember { mutableStateOf<CameraState>(CameraState.Closed) }
+    var permissionStatus by remember { mutableStateOf("Checking...") }
     
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(16.dp)
-            .verticalScroll(rememberScrollState()),
+            .background(Color.Black)
+            .padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+        verticalArrangement = Arrangement.Center
     ) {
         Text(
             text = "EcuCamera",
             style = MaterialTheme.typography.headlineLarge,
-            color = MaterialTheme.colorScheme.primary
+            color = Color.White,
+            textAlign = TextAlign.Center
         )
+        
+        Spacer(modifier = Modifier.height(8.dp))
         
         Text(
-            text = "Phase 2: The Nervous System",
+            text = "Phase 3: The Silent Engine",
             style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.secondary
+            color = Color.Gray,
+            textAlign = TextAlign.Center
         )
         
-        Divider()
+        Spacer(modifier = Modifier.height(48.dp))
         
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surfaceVariant
+                containerColor = Color(0xFF1A1A1A)
             )
         ) {
             Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                modifier = Modifier.padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Text(
-                    text = "Native Bridge Status",
-                    style = MaterialTheme.typography.titleMedium
+                    text = "Engine Status",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = Color.White
                 )
                 
                 Text(
-                    text = bridgeStatus,
+                    text = "Check Logcat for Engine Status...",
                     style = MaterialTheme.typography.bodyLarge,
-                    fontFamily = FontFamily.Monospace
+                    fontFamily = FontFamily.Monospace,
+                    color = Color.Green
                 )
                 
-                if (rustMessage.isNotEmpty()) {
-                    Text(
-                        text = "Rust Engine: $rustMessage",
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontFamily = FontFamily.Monospace
-                    )
-                }
+                Text(
+                    text = "Permission: $permissionStatus",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontFamily = FontFamily.Monospace,
+                    color = Color.Yellow
+                )
                 
-                if (engineStatus.isNotEmpty()) {
-                    Text(
-                        text = "Status: $engineStatus",
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontFamily = FontFamily.Monospace
-                    )
-                }
-                
-                if (initResult.isNotEmpty()) {
-                    Text(
-                        text = "Init: $initResult",
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontFamily = FontFamily.Monospace
-                    )
-                }
+                Text(
+                    text = "Camera State: $cameraState",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontFamily = FontFamily.Monospace,
+                    color = when (cameraState) {
+                        is CameraState.Closed -> Color.Gray
+                        is CameraState.Opening -> Color.Yellow
+                        is CameraState.Open -> Color.Green
+                        is CameraState.Configured -> Color.Cyan
+                        is CameraState.Error -> Color.Red
+                    }
+                )
             }
         }
         
-        Button(
-            onClick = {
-                // Refresh bridge status
-                try {
-                    if (NativeBridge.isNativeBridgeReady()) {
-                        bridgeStatus = "✅ Bridge Connected (Refreshed)"
-                        rustMessage = NativeBridge.stringFromRust()
-                        engineStatus = NativeBridge.getEngineStatus()
-                    }
-                } catch (e: Exception) {
-                    bridgeStatus = "❌ Refresh Error: ${e.message}"
-                }
-            }
-        ) {
-            Text("Refresh Bridge Status")
-        }
-    }
-}
-
-@Composable
-fun EcuCameraTheme(content: @Composable () -> Unit) {
-    MaterialTheme {
-        content()
-    }
-}
-
-@Preview(showBackground = true)
-@Composable
-fun EcuCameraMainScreenPreview() {
-    EcuCameraTheme {
-        EcuCameraMainScreen()
+        Spacer(modifier = Modifier.height(24.dp))
+        
+        Text(
+            text = "🔍 Hardware Probe: Scanning device capabilities...\n" +
+                  "🎥 Camera Engine: Attempting to connect to back camera...\n" +
+                  "📊 State Management: Monitoring camera lifecycle...\n\n" +
+                  "All detailed logs are in Logcat with tag 'ECU_*'",
+            style = MaterialTheme.typography.bodySmall,
+            color = Color.Gray,
+            textAlign = TextAlign.Center,
+            lineHeight = MaterialTheme.typography.bodySmall.lineHeight * 1.4
+        )
     }
 }
