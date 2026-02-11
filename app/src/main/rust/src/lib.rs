@@ -1,5 +1,5 @@
 use jni::JNIEnv;
-use jni::objects::{JClass, JByteBuffer, JByteArray};
+use jni::objects::{JClass, JByteBuffer};
 use jni::sys::{jint, jstring};
 
 /// Process image frame data and calculate average luminance
@@ -24,6 +24,7 @@ fn process_image_frame(data: &[u8], width: i32, height: i32, stride: i32) -> Str
     let mut luma_sum: u64 = 0;
     let mut pixel_count: u64 = 0;
     
+    // Process frame row by row, respecting stride
     for row in 0..height {
         let row_start = row * stride;
         let row_end = row_start + width;
@@ -32,6 +33,7 @@ fn process_image_frame(data: &[u8], width: i32, height: i32, stride: i32) -> Str
             break;
         }
         
+        // Process pixels in this row
         for col in 0..width {
             let pixel_index = row_start + col;
             if pixel_index < data.len() {
@@ -53,7 +55,7 @@ fn process_image_frame(data: &[u8], width: i32, height: i32, stride: i32) -> Str
 /// Basic Rust connection test
 #[no_mangle]
 pub extern "C" fn Java_id_xms_ecucamera_bridge_NativeBridge_stringFromRust(
-    mut env: JNIEnv,
+    env: JNIEnv,
     _class: JClass,
 ) -> jstring {
     let output = env.new_string("ECU Engine: Rust V8 Connected [Optimized]")
@@ -64,7 +66,7 @@ pub extern "C" fn Java_id_xms_ecucamera_bridge_NativeBridge_stringFromRust(
 /// Engine status check
 #[no_mangle]
 pub extern "C" fn Java_id_xms_ecucamera_bridge_NativeBridge_getEngineStatus(
-    mut env: JNIEnv,
+    env: JNIEnv,
     _class: JClass,
 ) -> jstring {
     let output = env.new_string("Rust Engine: Ready for ECU Communication")
@@ -75,7 +77,7 @@ pub extern "C" fn Java_id_xms_ecucamera_bridge_NativeBridge_getEngineStatus(
 /// Engine initialization
 #[no_mangle]
 pub extern "C" fn Java_id_xms_ecucamera_bridge_NativeBridge_initializeEngine(
-    mut env: JNIEnv,
+    env: JNIEnv,
     _class: JClass,
 ) -> jstring {
     let output = env.new_string("ECU Engine initialized successfully")
@@ -83,87 +85,54 @@ pub extern "C" fn Java_id_xms_ecucamera_bridge_NativeBridge_initializeEngine(
     output.into_raw()
 }
 
-/// Analyze frame using DirectByteBuffer (SAFE HIGH-LEVEL API)
+/// Analyze frame using DirectByteBuffer - CLEAN IMPLEMENTATION
 #[no_mangle]
 pub extern "C" fn Java_id_xms_ecucamera_bridge_NativeBridge_analyzeFrame(
     mut env: JNIEnv,
     _class: JClass,
     buffer: JByteBuffer,
-    _length: jint, // Keep for compatibility but use high-level API
+    length: jint,
     width: jint,
     height: jint,
     stride: jint,
 ) -> jstring {
-    // Use the high-level jni crate API - NO manual pointer manipulation
-    let data_result = unsafe { env.get_direct_buffer_address(&buffer) };
-    
-    let data = match data_result {
-        Ok(d) => d,
-        Err(_) => {
-            let error_msg = env.new_string("Error: Failed to get direct buffer address")
-                .expect("Couldn't create java string!");
-            return error_msg.into_raw();
-        }
-    };
-    
-    // Validate buffer size
-    let expected_size = (stride * height) as usize;
-    if data.len() < expected_size {
-        let error_msg = format!("Error: Buffer too small. Len: {}, Expected: {}", data.len(), expected_size);
-        let output = env.new_string(error_msg)
-            .expect("Couldn't create java string!");
-        return output.into_raw();
+    // Validate length parameter first
+    if length < 0 {
+        return env.new_string("Error: Invalid buffer length").unwrap().into_raw();
     }
     
-    // Process the frame
+    // Get raw pointer from DirectByteBuffer using high-level API
+    let buf_ptr: *mut u8 = match env.get_direct_buffer_address(&buffer) {
+        Ok(ptr) => ptr,
+        Err(_) => {
+            return env.new_string("Error: Failed to get direct buffer address").unwrap().into_raw();
+        }
+    };
+    
+    // SAFETY: Create a slice from the raw pointer and validated length
+    // This is safe because:
+    // 1. We validated length is non-negative
+    // 2. The pointer comes from a valid DirectByteBuffer
+    // 3. The JVM guarantees the buffer remains valid during this call
+    let data: &[u8] = unsafe {
+        std::slice::from_raw_parts(buf_ptr, length as usize)
+    };
+    
+    // Validate buffer size against expected frame dimensions
+    let expected_size = (stride * height) as usize;
+    if data.len() < expected_size {
+        let error_msg = format!(
+            "Error: Buffer too small. Len: {}, Expected: {}", 
+            data.len(), 
+            expected_size
+        );
+        return env.new_string(error_msg).unwrap().into_raw();
+    }
+    
+    // Process the frame and calculate luminance
     let result = process_image_frame(data, width, height, stride);
     
-    let output = env.new_string(result)
-        .expect("Couldn't create java string!");
-    output.into_raw()
-}
-
-/// Analyze frame using byte array (SAFE HIGH-LEVEL API)
-#[no_mangle]
-pub extern "C" fn Java_id_xms_ecucamera_bridge_NativeBridge_analyzeFrameArray(
-    mut env: JNIEnv,
-    _class: JClass,
-    data: JByteArray,
-    width: jint,
-    height: jint,
-    stride: jint,
-) -> jstring {
-    // Use the high-level jni crate API - NO manual pointer manipulation
-    let array_elements = env.get_byte_array_elements(&data, jni::objects::ReleaseMode::NoCopyBack);
-    
-    let byte_slice = match array_elements {
-        Ok(elements) => unsafe { elements.as_ptr() },
-        Err(_) => {
-            let error_msg = env.new_string("Error: Failed to get array elements")
-                .expect("Couldn't create java string!");
-            return error_msg.into_raw();
-        }
-    };
-    
-    // Get array length using high-level API
-    let array_length = match env.get_array_length(&data) {
-        Ok(len) => len as usize,
-        Err(_) => {
-            let error_msg = env.new_string("Error: Failed to get array length")
-                .expect("Couldn't create java string!");
-            return error_msg.into_raw();
-        }
-    };
-    
-    // Create safe slice
-    let data_slice = unsafe { 
-        std::slice::from_raw_parts(byte_slice as *const u8, array_length)
-    };
-    
-    // Process the frame
-    let result = process_image_frame(data_slice, width, height, stride);
-    
-    let output = env.new_string(result)
-        .expect("Couldn't create java string!");
+    // Return result as Java string
+    let output = env.new_string(result).expect("Couldn't create java string!");
     output.into_raw()
 }
