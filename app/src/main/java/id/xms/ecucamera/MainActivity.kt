@@ -5,6 +5,8 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
+import android.view.MotionEvent
+import android.view.ScaleGestureDetector
 import android.view.Surface
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -22,17 +24,21 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.ui.Modifier
 import androidx.compose.material3.*
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.FlashOff
+import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import androidx.compose.runtime.*
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
+import id.xms.ecucamera.engine.controller.FlashController
 import id.xms.ecucamera.engine.core.CameraEngine
 import id.xms.ecucamera.engine.core.CameraState
 import id.xms.ecucamera.engine.probe.HardwareProbe
 import id.xms.ecucamera.engine.pipeline.PipelineValidator
-import id.xms.ecucamera.ui.components.HistogramView
+import id.xms.ecucamera.ui.components.HistogramGraph
 import id.xms.ecucamera.ui.components.PeakingOverlay
 import id.xms.ecucamera.ui.screens.viewfinder.ViewfinderScreen
 import kotlinx.coroutines.delay
@@ -47,41 +53,41 @@ class MainActivity : ComponentActivity() {
     private lateinit var hardwareProbe: HardwareProbe
     private var currentSurface: Surface? = null
     
-    // Histogram data state
-    private var histogramData by mutableStateOf(listOf<Int>())
+    private var histogramDataCsv by mutableStateOf("")
+    private var lastHistogramUpdate by mutableStateOf(0L)
     
-    // Manual exposure control state
     private var isManualMode by mutableStateOf(false)
     private var isoSliderValue by mutableStateOf(0.0f)
     private var shutterSliderValue by mutableStateOf(0.5f)
     
-    // Manual focus control state
     private var isManualFocusMode by mutableStateOf(false)
     private var focusSliderValue by mutableStateOf(0.0f)
     private var focusBlocks by mutableStateOf(listOf<Int>())
     
-    // Permission launcher
+    private var currentZoom by mutableStateOf(1.0f)
+    private var scaleGestureDetector: ScaleGestureDetector? = null
+    
+    private var currentFlashMode by mutableStateOf(FlashController.FLASH_OFF)
+    
     private val cameraPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { isGranted ->
         if (isGranted) {
-            Log.d(TAG, "Camera permission GRANTED")
+            Log.d(TAG, "Camera permission granted")
             checkStoragePermission()
         } else {
-            Log.e(TAG, "Camera permission DENIED")
+            Log.e(TAG, "Camera permission denied")
         }
     }
     
-    // Storage permission launcher
     private val storagePermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { isGranted ->
         if (isGranted) {
-            Log.d(TAG, "Storage permission GRANTED")
+            Log.d(TAG, "Storage permission granted")
             startCameraEngine()
         } else {
-            Log.e(TAG, "Storage permission DENIED")
-            // Still start camera engine, but photo saving might fail
+            Log.e(TAG, "Storage permission denied")
             startCameraEngine()
         }
     }
@@ -89,13 +95,24 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
-        Log.d(TAG, "EcuCamera Phase 5: Lens Manager & Zoom Logic - Starting")
+        Log.d(TAG, "EcuCamera starting")
         
-        // Initialize engine components
         cameraEngine = CameraEngine(this)
         hardwareProbe = HardwareProbe(this)
         
-        // Request camera permission immediately
+        scaleGestureDetector = ScaleGestureDetector(this, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            override fun onScale(detector: ScaleGestureDetector): Boolean {
+                val scaleFactor = detector.scaleFactor
+                val newZoom = cameraEngine.getZoomController().calculateZoomFromGesture(scaleFactor, currentZoom)
+                
+                if (newZoom != currentZoom) {
+                    currentZoom = newZoom
+                    cameraEngine.setZoom(newZoom)
+                }
+                return true
+            }
+        })
+        
         checkAndRequestCameraPermission()
         
         setContent {
@@ -109,16 +126,19 @@ class MainActivity : ComponentActivity() {
                         onSurfaceDestroyed = {
                             currentSurface = null
                             cameraEngine.closeCamera()
+                        },
+                        onTouchEvent = { event ->
+                            scaleGestureDetector?.onTouchEvent(event) ?: false
                         }
                     )
                     
-                    // Overlay histogram view
-                    HistogramView(
-                        data = histogramData,
-                        modifier = Modifier.fillMaxSize()
+                    HistogramGraph(
+                        dataCsv = histogramDataCsv,
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(top = 60.dp, end = 16.dp)
                     )
                     
-                    // Focus peaking overlay (visible only in manual focus mode)
                     if (isManualFocusMode) {
                         PeakingOverlay(
                             focusBlocks = focusBlocks,
@@ -126,17 +146,48 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                     
-                    // Manual exposure controls overlay
+                    IconButton(
+                        onClick = {
+                            cameraEngine.cycleFlash()
+                            currentFlashMode = cameraEngine.getFlashController().getCurrentFlashMode()
+                        },
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(16.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (currentFlashMode == FlashController.FLASH_OFF) {
+                                Icons.Filled.FlashOff
+                            } else {
+                                Icons.Filled.FlashOn
+                            },
+                            contentDescription = if (currentFlashMode == FlashController.FLASH_OFF) {
+                                "Flash Off"
+                            } else {
+                                "Torch On"
+                            },
+                            tint = androidx.compose.ui.graphics.Color.White,
+                            modifier = Modifier.size(32.dp)
+                        )
+                    }
+                    
+                    if (currentZoom > 1.0f) {
+                        Text(
+                            text = "${String.format("%.1f", currentZoom)}x",
+                            color = androidx.compose.ui.graphics.Color.White,
+                            modifier = Modifier
+                                .align(Alignment.TopCenter)
+                                .padding(top = 24.dp)
+                        )
+                    }
+                    
                     Column(
                         modifier = Modifier
                             .align(Alignment.BottomStart)
                             .padding(16.dp)
                             .fillMaxWidth()
                     ) {
-                        // Auto/Manual Exposure toggle
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
                                 text = if (isManualMode) "Manual Exp" else "Auto Exp",
                                 color = androidx.compose.ui.graphics.Color.White
@@ -151,10 +202,7 @@ class MainActivity : ComponentActivity() {
                             )
                         }
                         
-                        // Auto/Manual Focus toggle
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
                                 text = if (isManualFocusMode) "Manual Focus" else "Auto Focus",
                                 color = androidx.compose.ui.graphics.Color.White
@@ -169,11 +217,9 @@ class MainActivity : ComponentActivity() {
                             )
                         }
                         
-                        // Manual exposure controls (visible only in manual mode)
                         if (isManualMode) {
                             Spacer(modifier = Modifier.height(8.dp))
                             
-                            // ISO Slider
                             Text(
                                 text = "ISO",
                                 color = androidx.compose.ui.graphics.Color.White
@@ -189,7 +235,6 @@ class MainActivity : ComponentActivity() {
                             
                             Spacer(modifier = Modifier.height(4.dp))
                             
-                            // Shutter Speed Slider
                             Text(
                                 text = "Shutter Speed",
                                 color = androidx.compose.ui.graphics.Color.White
@@ -204,11 +249,9 @@ class MainActivity : ComponentActivity() {
                             )
                         }
                         
-                        // Manual focus controls (visible only in manual focus mode)
                         if (isManualFocusMode) {
                             Spacer(modifier = Modifier.height(8.dp))
                             
-                            // Focus Slider
                             Text(
                                 text = "Focus Distance",
                                 color = androidx.compose.ui.graphics.Color.White
@@ -224,10 +267,8 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                     
-                    // Shutter button at bottom center
                     Button(
                         onClick = {
-                            Log.d(TAG, "Shutter button pressed")
                             cameraEngine.takePicture()
                         },
                         modifier = Modifier
@@ -238,9 +279,7 @@ class MainActivity : ComponentActivity() {
                         colors = ButtonDefaults.buttonColors(
                             containerColor = androidx.compose.ui.graphics.Color.White
                         )
-                    ) {
-                        // Empty content - just a white circular button
-                    }
+                    ) {}
                 }
             }
         }
@@ -253,28 +292,26 @@ class MainActivity : ComponentActivity() {
                 checkStoragePermission()
             }
             else -> {
-                Log.d(TAG, "Requesting camera permission...")
+                Log.d(TAG, "Requesting camera permission")
                 cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
             }
         }
     }
     
     private fun checkStoragePermission() {
-        // For Android 10+ (API 29+), we don't need WRITE_EXTERNAL_STORAGE for MediaStore
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            Log.d(TAG, "Android 10+: No storage permission needed for MediaStore")
+            Log.d(TAG, "Android 10+: No storage permission needed")
             startCameraEngine()
             return
         }
         
-        // For older versions, check WRITE_EXTERNAL_STORAGE
         when (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE)) {
             PackageManager.PERMISSION_GRANTED -> {
                 Log.d(TAG, "Storage permission already granted")
                 startCameraEngine()
             }
             else -> {
-                Log.d(TAG, "Requesting storage permission...")
+                Log.d(TAG, "Requesting storage permission")
                 storagePermissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
             }
         }
@@ -283,55 +320,49 @@ class MainActivity : ComponentActivity() {
     private fun startCameraEngine() {
         val surface = currentSurface
         if (surface == null) {
-            Log.w(TAG, "Surface not ready, skipping camera start")
+            Log.w(TAG, "Surface not ready")
             return
         }
         
         lifecycleScope.launch {
             try {
-                Log.d(TAG, "Starting hardware probe...")
+                Log.d(TAG, "Starting hardware probe")
                 hardwareProbe.dumpCapabilities()
                 
-                Log.d(TAG, "Validating pipeline components...")
+                Log.d(TAG, "Validating pipeline")
                 PipelineValidator.logPipelineArchitecture()
                 val pipelineValid = PipelineValidator.validatePipelineComponents()
                 
                 if (!pipelineValid) {
-                    Log.e(TAG, "Pipeline validation failed - aborting camera start")
+                    Log.e(TAG, "Pipeline validation failed")
                     return@launch
                 }
                 
-                Log.d(TAG, "Starting camera engine...")
+                Log.d(TAG, "Starting camera engine")
                 
                 lifecycleScope.launch {
                     cameraEngine.cameraState.collect { state ->
-                        Log.d(TAG, "Camera state changed to: $state")
+                        Log.d(TAG, "Camera state: $state")
                         
                         if (state is CameraState.Open) {
-                            Log.d(TAG, "Camera opened, starting preview...")
+                            Log.d(TAG, "Camera opened, starting preview")
                             cameraEngine.startPreview(surface, 
                                 onAnalysis = { csvData ->
-                                    // Parse CSV histogram data and update UI
-                                    try {
-                                        val histogramList = csvData.split(",").mapNotNull { it.toIntOrNull() }
-                                        if (histogramList.size == 256) {
-                                            histogramData = histogramList
-                                        }
-                                    } catch (e: Exception) {
-                                        Log.e(TAG, "Failed to parse histogram data: $csvData", e)
+                                    val currentTime = System.currentTimeMillis()
+                                    if (currentTime - lastHistogramUpdate > 33) {
+                                        histogramDataCsv = csvData
+                                        lastHistogramUpdate = currentTime
                                     }
                                 },
                                 onFocusPeaking = { csvData ->
-                                    // Parse CSV focus peaking data and update UI
                                     try {
                                         if (csvData.isNotEmpty()) {
-                                            val blockList = csvData.split(",").mapNotNull { it.toIntOrNull() }
-                                            focusBlocks = blockList
+                                            focusBlocks = csvData.split(",").mapNotNull { it.toIntOrNull() }
                                         } else {
                                             focusBlocks = listOf()
                                         }
                                     } catch (e: Exception) {
-                                        Log.e(TAG, "Failed to parse focus peaking data: $csvData", e)
+                                        Log.e(TAG, "Failed to parse focus peaking data", e)
                                         focusBlocks = listOf()
                                     }
                                 }
@@ -344,30 +375,24 @@ class MainActivity : ComponentActivity() {
                 
                 lifecycleScope.launch {
                     delay(3000)
-                    Log.d(TAG, "TEST: Switching to Ultra-Wide (ID 2)")
+                    Log.d(TAG, "Switching to ultra-wide camera")
                     cameraEngine.switchCamera("2", surface,
                         onAnalysis = { csvData ->
-                            // Parse CSV histogram data and update UI
-                            try {
-                                val histogramList = csvData.split(",").mapNotNull { it.toIntOrNull() }
-                                if (histogramList.size == 256) {
-                                    histogramData = histogramList
-                                }
-                            } catch (e: Exception) {
-                                Log.e(TAG, "Failed to parse histogram data: $csvData", e)
+                            val currentTime = System.currentTimeMillis()
+                            if (currentTime - lastHistogramUpdate > 33) {
+                                histogramDataCsv = csvData
+                                lastHistogramUpdate = currentTime
                             }
                         },
                         onFocusPeaking = { csvData ->
-                            // Parse CSV focus peaking data and update UI
                             try {
                                 if (csvData.isNotEmpty()) {
-                                    val blockList = csvData.split(",").mapNotNull { it.toIntOrNull() }
-                                    focusBlocks = blockList
+                                    focusBlocks = csvData.split(",").mapNotNull { it.toIntOrNull() }
                                 } else {
                                     focusBlocks = listOf()
                                 }
                             } catch (e: Exception) {
-                                Log.e(TAG, "Failed to parse focus peaking data: $csvData", e)
+                                Log.e(TAG, "Failed to parse focus peaking data", e)
                                 focusBlocks = listOf()
                             }
                         }
@@ -384,5 +409,10 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
         Log.d(TAG, "Destroying MainActivity")
         cameraEngine.destroy()
+    }
+    
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        scaleGestureDetector?.onTouchEvent(event)
+        return super.onTouchEvent(event)
     }
 }
