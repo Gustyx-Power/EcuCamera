@@ -3,7 +3,6 @@ package id.xms.ecucamera.engine.core
 import android.content.Context
 import android.graphics.ImageFormat
 import android.hardware.camera2.*
-import android.media.Image
 import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
@@ -13,13 +12,14 @@ import id.xms.ecucamera.bridge.NativeBridge
 import id.xms.ecucamera.engine.controller.CaptureController
 import id.xms.ecucamera.engine.controller.ExposureController
 import id.xms.ecucamera.engine.controller.FocusController
+import id.xms.ecucamera.engine.controller.ZoomController
+import id.xms.ecucamera.engine.controller.FlashController
 import id.xms.ecucamera.engine.pipeline.SessionManager
 import id.xms.ecucamera.engine.pipeline.RequestManager
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import java.nio.ByteBuffer
 
 class CameraEngine(private val context: Context) {
     
@@ -43,14 +43,14 @@ class CameraEngine(private val context: Context) {
     private val lensManager = LensManager()
     private val exposureController = ExposureController()
     private val focusController = FocusController()
+    private val zoomController = ZoomController()
+    private val flashController = FlashController()
     private val captureController = CaptureController(context)
     
-    // Manual exposure control variables
     private var isManualMode = false
     private var currentIso = 100
-    private var currentExpTime = 10_000_000L // 1/100s in nanoseconds
+    private var currentExpTime = 10_000_000L
     
-    // Manual focus control variables
     private var isManualFocusMode = false
     private var currentFocusDistance = 0.0f
     
@@ -59,7 +59,6 @@ class CameraEngine(private val context: Context) {
     private var jpegReader: ImageReader? = null
     private var previewJob: Job? = null
     
-    // Track current surfaces for manual exposure updates
     private var currentViewFinderSurface: Surface? = null
     
     private val backgroundThread = HandlerThread("CameraEngineThread").apply { start() }
@@ -67,77 +66,66 @@ class CameraEngine(private val context: Context) {
     
     private val engineScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
     
-    /**
-     * Camera Device State Callback - The Heart Monitor
-     */
     private val deviceStateCallback = object : CameraDevice.StateCallback() {
         override fun onOpened(camera: CameraDevice) {
-            Log.d(TAG, "Camera $currentCameraId Opened Successfully")
+            Log.d(TAG, "Camera $currentCameraId opened")
             cameraDevice = camera
             updateState(CameraState.Open)
         }
         
         override fun onDisconnected(camera: CameraDevice) {
-            Log.w(TAG, "Camera $currentCameraId DISCONNECTED")
+            Log.w(TAG, "Camera $currentCameraId disconnected")
             cleanup()
             updateState(CameraState.Error("Camera disconnected"))
         }
         
         override fun onError(camera: CameraDevice, error: Int) {
             val errorMsg = when (error) {
-                ERROR_CAMERA_IN_USE -> "Camera is already in use"
-                ERROR_MAX_CAMERAS_IN_USE -> "Maximum cameras in use"
-                ERROR_CAMERA_DISABLED -> "Camera disabled by policy"
+                ERROR_CAMERA_IN_USE -> "Camera in use"
+                ERROR_MAX_CAMERAS_IN_USE -> "Max cameras in use"
+                ERROR_CAMERA_DISABLED -> "Camera disabled"
                 ERROR_CAMERA_DEVICE -> "Camera device error"
                 ERROR_CAMERA_SERVICE -> "Camera service error"
-                else -> "Unknown camera error: $error"
+                else -> "Unknown error: $error"
             }
-            Log.e(TAG, "Camera $currentCameraId ERROR: $errorMsg")
+            Log.e(TAG, "Camera $currentCameraId error: $errorMsg")
             cleanup()
             updateState(CameraState.Error(errorMsg))
         }
     }
     
-    /**
-     * Capture Session State Callback - The Session Monitor
-     */
     private val sessionStateCallback = object : CameraCaptureSession.StateCallback() {
         override fun onConfigured(session: CameraCaptureSession) {
-            Log.d(TAG, "Camera Session CONFIGURED for camera $currentCameraId")
+            Log.d(TAG, "Session configured for camera $currentCameraId")
             captureSession = session
             updateState(CameraState.Configured)
         }
         
         override fun onConfigureFailed(session: CameraCaptureSession) {
-            Log.e(TAG, "Camera Session CONFIGURATION FAILED for camera $currentCameraId")
+            Log.e(TAG, "Session configuration failed for camera $currentCameraId")
             updateState(CameraState.Error("Session configuration failed"))
         }
         
         override fun onClosed(session: CameraCaptureSession) {
-            Log.d(TAG, "Camera Session CLOSED for camera $currentCameraId")
+            Log.d(TAG, "Session closed for camera $currentCameraId")
             captureSession = null
         }
     }
     
-    /**
-     * Open camera with specified ID
-     */
     fun openCamera(cameraId: String) {
         engineScope.launch {
             try {
-                Log.d(TAG, "Attempting to open camera: $cameraId")
+                Log.d(TAG, "Opening camera: $cameraId")
                 
-                // Check if camera is already open
                 if (_cameraState.value !is CameraState.Closed) {
-                    Log.w(TAG, "Camera already in use. Current state: ${_cameraState.value}")
+                    Log.w(TAG, "Camera already in use: ${_cameraState.value}")
                     return@launch
                 }
                 
-                // Validate camera ID exists
                 val availableCameras = cameraManager.cameraIdList
                 if (!availableCameras.contains(cameraId)) {
-                    val errorMsg = "Camera ID $cameraId not found. Available: ${availableCameras.joinToString()}"
-                    Log.e(TAG, "$errorMsg")
+                    val errorMsg = "Camera $cameraId not found. Available: ${availableCameras.joinToString()}"
+                    Log.e(TAG, errorMsg)
                     updateState(CameraState.Error(errorMsg))
                     return@launch
                 }
@@ -145,28 +133,25 @@ class CameraEngine(private val context: Context) {
                 currentCameraId = cameraId
                 updateState(CameraState.Opening)
                 
-                // Initialize exposure controller with camera characteristics
                 try {
                     val characteristics = cameraManager.getCameraCharacteristics(cameraId)
                     exposureController.setRanges(characteristics)
                     focusController.setCapabilities(characteristics)
-                    Log.d(TAG, "Controllers initialized:")
-                    Log.d(TAG, "  ${exposureController.getISORangeString()}, ${exposureController.getExposureRangeString()}")
-                    Log.d(TAG, "  ${focusController.getFocusRangeString()}")
+                    zoomController.setCharacteristics(characteristics)
+                    flashController.setCapabilities(characteristics)
+                    Log.d(TAG, "Controllers initialized: ${exposureController.getISORangeString()}, ${focusController.getFocusRangeString()}, ${zoomController.getZoomRangeString()}, ${flashController.getFlashCapabilitiesString()}")
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to initialize controllers", e)
                 }
                 
-                // Open camera on background thread
                 withContext(Dispatchers.Main) {
                     try {
                         cameraManager.openCamera(cameraId, deviceStateCallback, backgroundHandler)
-                        Log.d(TAG, "Camera open request sent for: $cameraId")
                     } catch (e: SecurityException) {
-                        Log.e(TAG, "Security exception opening camera $cameraId", e)
+                        Log.e(TAG, "Security exception opening camera", e)
                         updateState(CameraState.Error("Camera permission denied", e))
                     } catch (e: Exception) {
-                        Log.e(TAG, "Exception opening camera $cameraId", e)
+                        Log.e(TAG, "Exception opening camera", e)
                         updateState(CameraState.Error("Failed to open camera: ${e.message}", e))
                     }
                 }
@@ -178,15 +163,11 @@ class CameraEngine(private val context: Context) {
         }
     }
     
-    /**
-     * Close the current camera
-     */
     fun closeCamera() {
         engineScope.launch {
             Log.d(TAG, "Closing camera: $currentCameraId")
             cleanup()
             updateState(CameraState.Closed)
-            Log.d(TAG, "Camera closed successfully")
         }
     }
     
@@ -195,11 +176,11 @@ class CameraEngine(private val context: Context) {
             val oldId = currentCameraId
             
             if (newId == oldId) {
-                Log.d(TAG, "Camera switch ignored - already using ID $newId")
+                Log.d(TAG, "Camera switch ignored - already using $newId")
                 return@launch
             }
             
-            Log.d(TAG, "ECU_LENS: Switching from ID $oldId to $newId")
+            Log.d(TAG, "Switching from $oldId to $newId")
             
             closeCamera()
             
@@ -231,19 +212,15 @@ class CameraEngine(private val context: Context) {
                 }
                 
                 if (_cameraState.value !is CameraState.Open) {
-                    Log.e(TAG, "Cannot start preview: Camera not in Open state. Current: ${_cameraState.value}")
+                    Log.e(TAG, "Cannot start preview: Camera not open. Current: ${_cameraState.value}")
                     return@launch
                 }
                 
                 Log.d(TAG, "Starting preview for camera $currentCameraId")
                 
-                // Store current surface for manual exposure updates
                 currentViewFinderSurface = viewFinderSurface
                 
-                // Initialize analysis ImageReader (YUV format for processing)
                 this@CameraEngine.imageReader = ImageReader.newInstance(640, 480, ImageFormat.YUV_420_888, 2)
-                
-                // Initialize JPEG ImageReader for still capture (high resolution)
                 this@CameraEngine.jpegReader = ImageReader.newInstance(1920, 1080, ImageFormat.JPEG, 1)
                 
                 this@CameraEngine.imageReader!!.setOnImageAvailableListener({ reader ->
@@ -252,78 +229,60 @@ class CameraEngine(private val context: Context) {
                         val image = safeReader.acquireLatestImage() ?: return@setOnImageAvailableListener
                         
                         try {
-                            Log.d("ECU_DEBUG", "Frame received! Timestamp: ${image.timestamp}")
-                            
                             val plane = image.planes[0]
                             val stride = plane.rowStride
-                            val pixelStride = plane.pixelStride
-                            
-                            // Use DirectByteBuffer directly - no copying needed
                             val buffer = plane.buffer
                             val length = buffer.remaining()
                             
-                            Log.d("ECU_DEBUG", "Buffer info: length=$length, stride=$stride")
-                            
                             try {
                                 val result = NativeBridge.analyzeFrame(buffer, length, image.width, image.height, stride)
-                                Log.d("ECU_RUST", "Histogram Result: $result")
-                                
-                                // Call the analysis callback if provided
                                 onAnalysis?.invoke(result)
                                 
-                                // Process focus peaking if in manual focus mode
                                 if (isManualFocusMode) {
                                     try {
                                         val focusResult = NativeBridge.analyzeFocusPeaking(buffer, length, image.width, image.height, stride)
-                                        Log.d("ECU_FOCUS", "Focus Peaking Result: $focusResult")
                                         onFocusPeaking?.invoke(focusResult)
                                     } catch (e: Exception) {
-                                        Log.e("ECU_ERROR", "Focus peaking failed: ${e.message}", e)
+                                        Log.e(TAG, "Focus peaking failed: ${e.message}")
                                     }
                                 }
                             } catch (e: Exception) {
-                                Log.e("ECU_ERROR", "Rust call failed: ${e.message}", e)
+                                Log.e(TAG, "Rust call failed: ${e.message}")
                             }
                             
-                        } catch (e: Exception) {
-                            Log.e("ECU_ERROR", "Frame processing failed", e)
                         } finally {
                             image.close()
                         }
                         
                     } catch (e: Exception) {
-                        Log.e("ECU_ERROR", "Image listener error", e)
+                        Log.e(TAG, "Image listener error", e)
                     }
                 }, backgroundHandler)
                 
-                // Setup JPEG capture listener
                 this@CameraEngine.jpegReader!!.setOnImageAvailableListener({ reader ->
                     try {
                         val safeReader = this@CameraEngine.jpegReader ?: return@setOnImageAvailableListener
                         val image = safeReader.acquireLatestImage() ?: return@setOnImageAvailableListener
                         
                         try {
-                            Log.d("ECU_CAPTURE", "JPEG image captured! Size: ${image.width}x${image.height}")
+                            Log.d(TAG, "JPEG captured: ${image.width}x${image.height}")
                             
                             val plane = image.planes[0]
                             val buffer = plane.buffer
                             
-                            // Save the image
-                            val uri = captureController.saveImage(buffer, 0) // TODO: Get actual rotation
+                            val uri = captureController.saveImage(buffer, 0)
                             if (uri != null) {
-                                Log.d("ECU_CAPTURE", "Photo saved to: $uri")
+                                Log.d(TAG, "Photo saved to: $uri")
                             } else {
-                                Log.e("ECU_CAPTURE", "Failed to save photo")
+                                Log.e(TAG, "Failed to save photo")
                             }
                             
-                        } catch (e: Exception) {
-                            Log.e("ECU_ERROR", "JPEG processing failed", e)
                         } finally {
                             image.close()
                         }
                         
                     } catch (e: Exception) {
-                        Log.e("ECU_ERROR", "JPEG listener error", e)
+                        Log.e(TAG, "JPEG listener error", e)
                     }
                 }, backgroundHandler)
                 
@@ -340,33 +299,27 @@ class CameraEngine(private val context: Context) {
                                 builder.addTarget(viewFinderSurface)
                                 builder.addTarget(this@CameraEngine.imageReader!!.surface)
                                 
-                                // Apply exposure settings
-                                if (isManualMode) {
-                                    builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
-                                    builder.set(CaptureRequest.SENSOR_SENSITIVITY, currentIso)
-                                    builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, currentExpTime)
-                                    Log.d(TAG, "Manual exposure applied: ISO=$currentIso, ExpTime=${currentExpTime}ns")
-                                } else {
-                                    builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                                if (zoomController.isZoomSupported()) {
+                                    val zoomRect = zoomController.calculateZoomRect(zoomController.getZoomLevel())
+                                    builder.set(CaptureRequest.SCALER_CROP_REGION, zoomRect)
                                 }
                                 
-                                // Apply focus settings
+                                exposureController.applyToBuilder(builder, isManualMode, currentIso, currentExpTime)
+                                
                                 if (isManualFocusMode) {
                                     focusController.applyManualFocus(builder, currentFocusDistance)
                                 } else {
                                     focusController.applyAutoFocus(builder)
                                 }
                                 
+                                flashController.applyToBuilder(builder, isManualMode)
+                                
                                 builder.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
                                 
-                                session.setRepeatingRequest(
-                                    builder.build(),
-                                    null,
-                                    backgroundHandler
-                                )
+                                session.setRepeatingRequest(builder.build(), null, backgroundHandler)
                                 
                                 updateState(CameraState.Configured)
-                                Log.d(TAG, "ECU_ENGINE: Preview Running (Dual Output - Safe Mode)")
+                                Log.d(TAG, "Preview running")
                                 
                             } catch (e: IllegalStateException) {
                                 Log.w(TAG, "Session closed during preview start")
@@ -376,7 +329,7 @@ class CameraEngine(private val context: Context) {
                         }
                         
                         override fun onConfigureFailed(session: CameraCaptureSession) {
-                            Log.e(TAG, "Camera Session CONFIGURATION FAILED")
+                            Log.e(TAG, "Session configuration failed")
                             updateState(CameraState.Error("Session configuration failed"))
                         }
                     },
@@ -390,9 +343,6 @@ class CameraEngine(private val context: Context) {
         }
     }
     
-    /**
-     * Capture a still image in JPEG format
-     */
     fun takePicture() {
         engineScope.launch {
             try {
@@ -405,45 +355,37 @@ class CameraEngine(private val context: Context) {
                     return@launch
                 }
                 
-                Log.d(TAG, "Taking picture...")
+                Log.d(TAG, "Taking picture")
                 
-                // Create capture request for still image
                 val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
                 builder.addTarget(jpegReader.surface)
                 
-                // Apply current manual settings
-                if (isManualMode) {
-                    builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
-                    builder.set(CaptureRequest.SENSOR_SENSITIVITY, currentIso)
-                    builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, currentExpTime)
-                    Log.d(TAG, "Still capture with manual exposure: ISO=$currentIso, ExpTime=${currentExpTime}ns")
-                } else {
-                    builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                if (zoomController.isZoomSupported()) {
+                    val zoomRect = zoomController.calculateZoomRect(zoomController.getZoomLevel())
+                    builder.set(CaptureRequest.SCALER_CROP_REGION, zoomRect)
                 }
                 
-                // Apply focus settings
+                exposureController.applyToBuilder(builder, isManualMode, currentIso, currentExpTime)
+                
                 if (isManualFocusMode) {
                     focusController.applyManualFocus(builder, currentFocusDistance)
                 } else {
                     focusController.applyAutoFocus(builder)
                 }
                 
-                // Set JPEG orientation (TODO: Get actual device orientation)
+                flashController.applyToCaptureBuilder(builder, isManualMode)
+                
                 builder.set(CaptureRequest.JPEG_ORIENTATION, 0)
-                
-                // Set JPEG quality
                 builder.set(CaptureRequest.JPEG_QUALITY, 95.toByte())
-                
                 builder.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
                 
-                // Capture the image
                 session.capture(builder.build(), object : CameraCaptureSession.CaptureCallback() {
                     override fun onCaptureCompleted(
                         session: CameraCaptureSession,
                         request: CaptureRequest,
                         result: TotalCaptureResult
                     ) {
-                        Log.d(TAG, "Still capture completed")
+                        Log.d(TAG, "Capture completed")
                     }
                     
                     override fun onCaptureFailed(
@@ -451,7 +393,7 @@ class CameraEngine(private val context: Context) {
                         request: CaptureRequest,
                         failure: CaptureFailure
                     ) {
-                        Log.e(TAG, "Still capture failed: ${failure.reason}")
+                        Log.e(TAG, "Capture failed: ${failure.reason}")
                     }
                 }, backgroundHandler)
                 
@@ -461,86 +403,78 @@ class CameraEngine(private val context: Context) {
         }
     }
 
-    /**
-     * Toggle between auto and manual focus mode
-     */
-    fun setManualFocusMode(enabled: Boolean) {
+    fun setZoom(zoomLevel: Float) {
         engineScope.launch {
-            isManualFocusMode = enabled
-            Log.d(TAG, "Manual focus mode: ${if (enabled) "ENABLED" else "DISABLED"}")
+            try {
+                zoomController.setZoom(zoomLevel)
+                updateRepeatingRequest()
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to set zoom", e)
+            }
+        }
+    }
+    
+    fun setFlash(mode: Int) {
+        engineScope.launch {
+            flashController.setFlashMode(mode)
             updateRepeatingRequest()
         }
     }
     
-    /**
-     * Update focus distance from slider (0.0 - 1.0)
-     */
+    fun cycleFlash() {
+        engineScope.launch {
+            flashController.cycleFlashMode()
+            updateRepeatingRequest()
+        }
+    }
+
+    fun setManualFocusMode(enabled: Boolean) {
+        engineScope.launch {
+            isManualFocusMode = enabled
+            Log.d(TAG, "Manual focus: ${if (enabled) "ON" else "OFF"}")
+            updateRepeatingRequest()
+        }
+    }
+    
     fun updateFocus(sliderValue: Float) {
         engineScope.launch {
             currentFocusDistance = focusController.calculateFocusDistance(sliderValue)
-            Log.d(TAG, "Focus distance updated to: $currentFocusDistance diopters")
             if (isManualFocusMode) {
                 updateRepeatingRequest()
             }
         }
     }
     
-    /**
-     * Get focus controller for UI access
-     */
     fun getFocusController(): FocusController = focusController
-    
-    /**
-     * Check if manual focus is supported
-     */
     fun isManualFocusSupported(): Boolean = focusController.isManualFocusSupported()
-    
-    /**
-     * Get current manual focus mode state
-     */
     fun isInManualFocusMode(): Boolean = isManualFocusMode
 
-    /**
-     * Toggle between auto and manual exposure mode
-     */
     fun setManualMode(enabled: Boolean) {
         engineScope.launch {
             isManualMode = enabled
-            Log.d(TAG, "Manual exposure mode: ${if (enabled) "ENABLED" else "DISABLED"}")
+            Log.d(TAG, "Manual exposure: ${if (enabled) "ON" else "OFF"}")
             updateRepeatingRequest()
         }
     }
     
-    /**
-     * Update ISO value from slider (0.0 - 1.0)
-     */
     fun updateISO(sliderValue: Float) {
         engineScope.launch {
             currentIso = exposureController.calculateISO(sliderValue)
-            Log.d(TAG, "ISO updated to: $currentIso")
             if (isManualMode) {
                 updateRepeatingRequest()
             }
         }
     }
     
-    /**
-     * Update shutter speed from slider (0.0 - 1.0)
-     */
     fun updateShutter(sliderValue: Float) {
         engineScope.launch {
             currentExpTime = exposureController.calculateExposureTime(sliderValue)
-            val seconds = currentExpTime / 1_000_000_000.0
-            Log.d(TAG, "Exposure time updated to: ${currentExpTime}ns (${seconds}s)")
             if (isManualMode) {
                 updateRepeatingRequest()
             }
         }
     }
     
-    /**
-     * Update the repeating capture request with current settings
-     */
     private fun updateRepeatingRequest() {
         try {
             val device = cameraDevice ?: return
@@ -551,26 +485,21 @@ class CameraEngine(private val context: Context) {
             val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
             builder.addTarget(viewFinder)
             builder.addTarget(reader.surface)
-            // Note: Don't add JPEG reader to preview request - it's only for still capture
             
-            if (isManualMode) {
-                // Set manual exposure mode
-                builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
-                builder.set(CaptureRequest.SENSOR_SENSITIVITY, currentIso)
-                builder.set(CaptureRequest.SENSOR_EXPOSURE_TIME, currentExpTime)
-                Log.d(TAG, "Manual mode: ISO=$currentIso, ExpTime=${currentExpTime}ns")
-            } else {
-                // Set auto exposure mode
-                builder.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
-                Log.d(TAG, "Auto exposure mode enabled")
+            if (zoomController.isZoomSupported()) {
+                val zoomRect = zoomController.calculateZoomRect(zoomController.getZoomLevel())
+                builder.set(CaptureRequest.SCALER_CROP_REGION, zoomRect)
             }
             
-            // Apply focus settings
+            exposureController.applyToBuilder(builder, isManualMode, currentIso, currentExpTime)
+            
             if (isManualFocusMode) {
                 focusController.applyManualFocus(builder, currentFocusDistance)
             } else {
                 focusController.applyAutoFocus(builder)
             }
+            
+            flashController.applyToBuilder(builder, isManualMode)
             
             builder.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
             
@@ -581,33 +510,20 @@ class CameraEngine(private val context: Context) {
         }
     }
     
-    /**
-     * Get exposure controller for UI access
-     */
     fun getExposureController(): ExposureController = exposureController
-    
-    /**
-     * Check if manual exposure is supported
-     */
     fun isManualExposureSupported(): Boolean = exposureController.isManualExposureSupported()
-    
-    /**
-     * Get current manual mode state
-     */
     fun isInManualMode(): Boolean = isManualMode
+    
+    fun getZoomController(): ZoomController = zoomController
+    fun getFlashController(): FlashController = flashController
+    
+    fun isZoomSupported(): Boolean = zoomController.isZoomSupported()
+    fun isFlashSupported(): Boolean = flashController.isFlashSupported()
 
-    /**
-     * Update the camera state and log the change
-     */
     private fun updateState(newState: CameraState) {
-        val oldState = _cameraState.value
         _cameraState.value = newState
-        Log.d(TAG, "State transition: $oldState → $newState")
     }
     
-    /**
-     * Clean up camera resources
-     */
     private fun cleanup() {
         previewJob?.cancel()
         previewJob = null
@@ -631,19 +547,9 @@ class CameraEngine(private val context: Context) {
         currentViewFinderSurface = null
     }
     
-    /**
-     * Get current camera ID
-     */
     fun getCurrentCameraId(): String? = currentCameraId
-    
-    /**
-     * Check if camera is ready for operations
-     */
     fun isReady(): Boolean = _cameraState.value is CameraState.Open || _cameraState.value is CameraState.Configured
     
-    /**
-     * Cleanup resources when engine is destroyed
-     */
     fun destroy() {
         Log.d(TAG, "Destroying Camera Engine")
         engineScope.cancel()

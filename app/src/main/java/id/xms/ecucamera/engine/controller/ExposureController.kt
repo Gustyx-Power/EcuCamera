@@ -108,4 +108,31 @@ class ExposureController {
     fun isManualExposureSupported(): Boolean {
         return isoRange != null && exposureTimeRange != null
     }
+    
+    /**
+     * Apply exposure settings to capture request builder
+     * @param builder CaptureRequest.Builder to apply settings to
+     * @param isManualMode Whether manual exposure mode is active
+     * @param currentIso Current ISO value (used only in manual mode)
+     * @param currentExpTime Current exposure time (used only in manual mode)
+     */
+    fun applyToBuilder(builder: android.hardware.camera2.CaptureRequest.Builder, isManualMode: Boolean, currentIso: Int, currentExpTime: Long) {
+        try {
+            if (isManualMode && isManualExposureSupported()) {
+                // Set manual exposure mode
+                builder.set(android.hardware.camera2.CaptureRequest.CONTROL_AE_MODE, android.hardware.camera2.CaptureRequest.CONTROL_AE_MODE_OFF)
+                builder.set(android.hardware.camera2.CaptureRequest.SENSOR_SENSITIVITY, currentIso)
+                builder.set(android.hardware.camera2.CaptureRequest.SENSOR_EXPOSURE_TIME, currentExpTime)
+                Log.d(TAG, "Applied manual exposure: ISO=$currentIso, ExpTime=${currentExpTime}ns")
+            } else {
+                // Set auto exposure mode
+                builder.set(android.hardware.camera2.CaptureRequest.CONTROL_AE_MODE, android.hardware.camera2.CaptureRequest.CONTROL_AE_MODE_ON)
+                Log.d(TAG, "Applied auto exposure mode")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to apply exposure settings", e)
+            // Fallback to auto exposure
+            builder.set(android.hardware.camera2.CaptureRequest.CONTROL_AE_MODE, android.hardware.camera2.CaptureRequest.CONTROL_AE_MODE_ON)
+        }
+    }
 }
