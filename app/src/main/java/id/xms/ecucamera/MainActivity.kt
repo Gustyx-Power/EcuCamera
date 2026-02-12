@@ -63,6 +63,17 @@ class MainActivity : ComponentActivity() {
         }
     }
     
+    private val mediaImagesPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            Log.d(TAG, "Media images permission granted")
+        } else {
+            Log.d(TAG, "Media images permission denied - gallery thumbnail may not work")
+        }
+        startCameraEngine()
+    }
+    
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
@@ -149,20 +160,31 @@ class MainActivity : ComponentActivity() {
     }
     
     private fun checkStoragePermission() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            Log.d(TAG, "Android 10+: No storage permission needed")
-            startCameraEngine()
-            return
-        }
-        
-        when (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE)) {
-            PackageManager.PERMISSION_GRANTED -> {
-                Log.d(TAG, "Storage permission already granted")
-                startCameraEngine()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            // Android 13+ requires READ_MEDIA_IMAGES
+            when (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_MEDIA_IMAGES)) {
+                PackageManager.PERMISSION_GRANTED -> {
+                    Log.d(TAG, "Media images permission already granted")
+                    startCameraEngine()
+                }
+                else -> {
+                    Log.d(TAG, "Requesting media images permission")
+                    mediaImagesPermissionLauncher.launch(Manifest.permission.READ_MEDIA_IMAGES)
+                }
             }
-            else -> {
-                Log.d(TAG, "Requesting storage permission")
-                storagePermissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            Log.d(TAG, "Android 10-12: No storage permission needed")
+            startCameraEngine()
+        } else {
+            when (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE)) {
+                PackageManager.PERMISSION_GRANTED -> {
+                    Log.d(TAG, "Storage permission already granted")
+                    startCameraEngine()
+                }
+                else -> {
+                    Log.d(TAG, "Requesting storage permission")
+                    storagePermissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                }
             }
         }
     }

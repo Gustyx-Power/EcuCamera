@@ -18,6 +18,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import id.xms.ecucamera.R
+import id.xms.ecucamera.ui.components.hud.HistogramGraph
 
 @Composable
 fun TopControlBar(

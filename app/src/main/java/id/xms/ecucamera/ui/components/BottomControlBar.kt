@@ -1,5 +1,6 @@
 package id.xms.ecucamera.ui.components
 
+import android.graphics.Bitmap
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -19,7 +20,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CameraFront
-import androidx.compose.material.icons.filled.Photo
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
@@ -33,6 +33,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import id.xms.ecucamera.R
+import id.xms.ecucamera.ui.components.gallery.GalleryButton
 import id.xms.ecucamera.ui.model.CameraMode
 import id.xms.ecucamera.ui.model.ManualTarget
 
@@ -50,6 +51,7 @@ fun BottomControlBar(
     isoDisplayValue: String = "100",
     shutterDisplayValue: String = "1/60",
     focusDisplayValue: String = "2.0m",
+    galleryThumbnail: Bitmap? = null,
     modifier: Modifier = Modifier
 ) {
     val modes = listOf(
@@ -140,14 +142,10 @@ fun BottomControlBar(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                IconButton(onClick = onGalleryClick) {
-                    Icon(
-                        imageVector = Icons.Filled.Photo,
-                        contentDescription = stringResource(R.string.cd_open_gallery),
-                        tint = Color.White,
-                        modifier = Modifier.size(32.dp)
-                    )
-                }
+                GalleryButton(
+                    thumbnail = galleryThumbnail,
+                    onClick = onGalleryClick
+                )
                 
                 ShutterButton(onClick = onShutterClick)
                 
