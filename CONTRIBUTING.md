@@ -261,10 +261,43 @@ build_debug.bat
    ```
 
 2. **View Logs:**
+   
+   **Linux/macOS:**
    ```bash
-   # Monitor application logs
+   # Monitor application logs (manual)
    adb logcat | grep -E "(EcuBridge|NativeBridge|MainActivity)"
+   
+   # Save logs to timestamped file
+   ./logcat-save.sh
+   
+   # Or use the logcat helper scripts
+   cd mTools-logcat/linux-macOS
+   chmod +x *.sh
+   ./logcat.sh          # Main ECU logs
+   ./logcat-all.sh      # Full app logs with PID filtering
+   ./logcat-app.sh      # Simple app package filter
+   ./logcat-rust.sh     # Rust processing logs
+   ./logcat-filtered.sh # Filtered engine monitoring
    ```
+   
+   **Windows:**
+   ```cmd
+   REM Monitor application logs (manual)
+   adb logcat | findstr /i "EcuBridge NativeBridge MainActivity"
+   
+   REM Save logs to timestamped file
+   logcat-save.bat
+   
+   REM Use the batch scripts in mTools-logcat/windows/
+   cd mTools-logcat\windows
+   logcat.bat          REM Main ECU logs
+   logcat-all.bat      REM Full app logs with PID filtering
+   logcat-app.bat      REM Simple app package filter
+   logcat-rust.bat     REM Rust processing logs
+   logcat-filtered.bat REM Filtered engine monitoring
+   ```
+   
+   See `mTools-logcat/LOGCAT_SCRIPTS.md` for detailed documentation.
 
 ### Debugging
 
@@ -360,4 +393,4 @@ Rust Engine (ecucamera_engine)
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the Apache 2.0 License - see the [LICENSE](LICENSE) file for details.
