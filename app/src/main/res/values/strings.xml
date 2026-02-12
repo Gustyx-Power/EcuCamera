@@ -22,6 +22,7 @@
     <string name="cd_settings">Settings</string>
     <string name="cd_flash_off">Flash Off</string>
     <string name="cd_flash_on">Flash On</string>
+    <string name="cd_back">Back</string>
     
     <!-- Zoom Labels -->
     <string name="zoom_1x">1x</string>
