@@ -3,10 +3,13 @@ package id.xms.ecucamera.ui.screens
 import android.graphics.Bitmap
 import android.media.MediaActionSound
 import android.view.Surface
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -93,6 +96,9 @@ fun CameraScreen(
     // Shutter animation state
     var triggerShutterAnim by remember { mutableStateOf(false) }
     
+    // Gallery viewer state
+    var showGallery by remember { mutableStateOf(false) }
+    
     // Audio feedback setup
     val mediaActionSound = remember { MediaActionSound() }
     
@@ -120,179 +126,210 @@ fun CameraScreen(
     
     val isProMode = selectedMode == CameraMode.PRO
     
+    // Handle back button when gallery is open
+    BackHandler(enabled = showGallery) {
+        showGallery = false
+        // Reload thumbnail when returning from gallery
+        latestThumbnail = GalleryManager.getLastImageThumbnail(context)
+    }
+    
     Box(modifier = modifier.fillMaxSize()) {
-        // 1. Camera Preview
+        // LAYER 1 (Bottom): Camera Preview - ALWAYS RENDERED to keep session alive
         ViewfinderScreen(
             onSurfaceReady = onSurfaceReady,
             onSurfaceDestroyed = onSurfaceDestroyed,
             onTouchEvent = onTouchEvent
         )
         
-        // 2. Shutter Effect Overlay (Black flash animation)
-        ShutterEffectOverlay(
-            trigger = triggerShutterAnim,
-            onFinished = { triggerShutterAnim = false }
-        )
+        // LAYER 2: Shutter Effect Overlay (Black flash animation)
+        if (!showGallery) {
+            ShutterEffectOverlay(
+                trigger = triggerShutterAnim,
+                onFinished = { triggerShutterAnim = false }
+            )
+        }
         
-        // 3. Grid Overlay
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            val width = size.width
-            val height = size.height
-            
-            for (i in 1..2) {
-                val x = width * i / 3
-                drawLine(
-                    color = Color.White.copy(alpha = 0.3f),
-                    start = Offset(x, 0f),
-                    end = Offset(x, height),
-                    strokeWidth = 1f
-                )
-            }
-            
-            for (i in 1..2) {
-                val y = height * i / 3
-                drawLine(
-                    color = Color.White.copy(alpha = 0.3f),
-                    start = Offset(0f, y),
-                    end = Offset(width, y),
-                    strokeWidth = 1f
-                )
+        // LAYER 3: Grid Overlay
+        if (!showGallery) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val width = size.width
+                val height = size.height
+                
+                for (i in 1..2) {
+                    val x = width * i / 3
+                    drawLine(
+                        color = Color.White.copy(alpha = 0.3f),
+                        start = Offset(x, 0f),
+                        end = Offset(x, height),
+                        strokeWidth = 1f
+                    )
+                }
+                
+                for (i in 1..2) {
+                    val y = height * i / 3
+                    drawLine(
+                        color = Color.White.copy(alpha = 0.3f),
+                        start = Offset(0f, y),
+                        end = Offset(width, y),
+                        strokeWidth = 1f
+                    )
+                }
             }
         }
         
-        TopControlBar(
-            histogramData = histogramData,
-            flashMode = flashMode,
-            onFlashToggle = {
-                flashMode = if (flashMode == 0) 1 else 0
-                onFlashToggle()
-            },
-            onSettingsClick = { },
-            modifier = Modifier.align(Alignment.TopCenter)
-        )
-        
-        BottomControlBar(
-            currentZoom = currentZoom,
-            onZoomChange = { zoom ->
-                currentZoom = zoom
-                onZoomChange(zoom)
-            },
-            selectedMode = selectedMode,
-            onModeChange = { mode ->
-                val wasProMode = selectedMode == CameraMode.PRO
-                selectedMode = mode
-                val isNowProMode = mode == CameraMode.PRO
-                
-                if (wasProMode != isNowProMode) {
-                    activeManualTarget = ManualTarget.NONE
-                    onManualModeChange(isNowProMode)
+        // LAYER 4: Camera Controls (only visible when gallery is closed)
+        if (!showGallery) {
+            TopControlBar(
+                histogramData = histogramData,
+                flashMode = flashMode,
+                onFlashToggle = {
+                    flashMode = if (flashMode == 0) 1 else 0
+                    onFlashToggle()
+                },
+                onSettingsClick = { },
+                modifier = Modifier.align(Alignment.TopCenter)
+            )
+            
+            BottomControlBar(
+                currentZoom = currentZoom,
+                onZoomChange = { zoom ->
+                    currentZoom = zoom
+                    onZoomChange(zoom)
+                },
+                selectedMode = selectedMode,
+                onModeChange = { mode ->
+                    val wasProMode = selectedMode == CameraMode.PRO
+                    selectedMode = mode
+                    val isNowProMode = mode == CameraMode.PRO
+                    
+                    if (wasProMode != isNowProMode) {
+                        activeManualTarget = ManualTarget.NONE
+                        onManualModeChange(isNowProMode)
+                    }
+                },
+                onGalleryClick = {
+                    showGallery = true
+                },
+                onShutterClick = {
+                    // 1. Play shutter sound immediately
+                    mediaActionSound.play(MediaActionSound.SHUTTER_CLICK)
+                    
+                    // 2. Trigger visual feedback (black flash)
+                    triggerShutterAnim = true
+                    
+                    // 3. Take the picture
+                    onShutterClick()
+                    
+                    // 4. Reload thumbnail after a short delay to allow image to be saved
+                    coroutineScope.launch {
+                        delay(500)
+                        latestThumbnail = GalleryManager.getLastImageThumbnail(context)
+                    }
+                },
+                onSwitchCamera = onSwitchCamera,
+                activeManualTarget = activeManualTarget,
+                onManualTargetChange = { target ->
+                    activeManualTarget = target
+                },
+                isoDisplayValue = "${(100 + isoValue * 3100).toInt()}",
+                shutterDisplayValue = "1/${(1 + shutterValue * 999).toInt()}",
+                focusDisplayValue = "${String.format("%.1f", focusValue * 10)}m",
+                galleryThumbnail = latestThumbnail,
+                modifier = Modifier.align(Alignment.BottomCenter)
+            )
+            
+            // Manual controls slider
+            AnimatedVisibility(
+                visible = isProMode && activeManualTarget != ManualTarget.NONE,
+                enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+                exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 300.dp)
+                    .fillMaxWidth()
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(
+                            Brush.verticalGradient(
+                                colors = listOf(
+                                    Color.Black.copy(alpha = 0.6f),
+                                    Color.Black.copy(alpha = 0.3f)
+                                )
+                            )
+                        )
+                        .padding(horizontal = 24.dp, vertical = 16.dp)
+                ) {
+                    when (activeManualTarget) {
+                        ManualTarget.ISO -> {
+                            Slider(
+                                value = isoValue,
+                                onValueChange = { value ->
+                                    isoValue = value
+                                    onIsoChange(value)
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = SliderDefaults.colors(
+                                    thumbColor = Color(0xFFFFC107),
+                                    activeTrackColor = Color(0xFFFFC107),
+                                    inactiveTrackColor = Color.White.copy(alpha = 0.3f)
+                                )
+                            )
+                        }
+                        ManualTarget.SHUTTER -> {
+                            Slider(
+                                value = shutterValue,
+                                onValueChange = { value ->
+                                    shutterValue = value
+                                    onShutterChange(value)
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = SliderDefaults.colors(
+                                    thumbColor = Color(0xFFFFC107),
+                                    activeTrackColor = Color(0xFFFFC107),
+                                    inactiveTrackColor = Color.White.copy(alpha = 0.3f)
+                                )
+                            )
+                        }
+                        ManualTarget.FOCUS -> {
+                            Slider(
+                                value = focusValue,
+                                onValueChange = { value ->
+                                    focusValue = value
+                                    onFocusChange(value)
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = SliderDefaults.colors(
+                                    thumbColor = Color(0xFFFFC107),
+                                    activeTrackColor = Color(0xFFFFC107),
+                                    inactiveTrackColor = Color.White.copy(alpha = 0.3f)
+                                )
+                            )
+                        }
+                        ManualTarget.NONE -> { /* No slider */ }
+                    }
                 }
-            },
-            onGalleryClick = {
-                GalleryManager.openGallery(context)
-            },
-            onShutterClick = {
-                // 1. Play shutter sound immediately
-                mediaActionSound.play(MediaActionSound.SHUTTER_CLICK)
-                
-                // 2. Trigger visual feedback (black flash)
-                triggerShutterAnim = true
-                
-                // 3. Take the picture
-                onShutterClick()
-                
-                // 4. Reload thumbnail after a short delay to allow image to be saved
-                coroutineScope.launch {
-                    delay(500)
+            }
+        }
+        
+        // LAYER 5 (Top): Gallery Overlay - Slides in from right
+        AnimatedVisibility(
+            visible = showGallery,
+            enter = slideInHorizontally(initialOffsetX = { it }) + fadeIn(),
+            exit = slideOutHorizontally(targetOffsetX = { it }) + fadeOut(),
+            modifier = Modifier.fillMaxSize()
+        ) {
+            GalleryScreen(
+                onBack = {
+                    showGallery = false
+                    // Reload thumbnail when returning from gallery
                     latestThumbnail = GalleryManager.getLastImageThumbnail(context)
                 }
-            },
-            onSwitchCamera = onSwitchCamera,
-            activeManualTarget = activeManualTarget,
-            onManualTargetChange = { target ->
-                activeManualTarget = target
-            },
-            isoDisplayValue = "${(100 + isoValue * 3100).toInt()}",
-            shutterDisplayValue = "1/${(1 + shutterValue * 999).toInt()}",
-            focusDisplayValue = "${String.format("%.1f", focusValue * 10)}m",
-            galleryThumbnail = latestThumbnail,
-            modifier = Modifier.align(Alignment.BottomCenter)
-        )
-        
-        AnimatedVisibility(
-            visible = isProMode && activeManualTarget != ManualTarget.NONE,
-            enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
-            exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 300.dp)
-                .fillMaxWidth()
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(
-                        Brush.verticalGradient(
-                            colors = listOf(
-                                Color.Black.copy(alpha = 0.6f),
-                                Color.Black.copy(alpha = 0.3f)
-                            )
-                        )
-                    )
-                    .padding(horizontal = 24.dp, vertical = 16.dp)
-            ) {
-                when (activeManualTarget) {
-                    ManualTarget.ISO -> {
-                        Slider(
-                            value = isoValue,
-                            onValueChange = { value ->
-                                isoValue = value
-                                onIsoChange(value)
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = SliderDefaults.colors(
-                                thumbColor = Color(0xFFFFC107),
-                                activeTrackColor = Color(0xFFFFC107),
-                                inactiveTrackColor = Color.White.copy(alpha = 0.3f)
-                            )
-                        )
-                    }
-                    ManualTarget.SHUTTER -> {
-                        Slider(
-                            value = shutterValue,
-                            onValueChange = { value ->
-                                shutterValue = value
-                                onShutterChange(value)
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = SliderDefaults.colors(
-                                thumbColor = Color(0xFFFFC107),
-                                activeTrackColor = Color(0xFFFFC107),
-                                inactiveTrackColor = Color.White.copy(alpha = 0.3f)
-                            )
-                        )
-                    }
-                    ManualTarget.FOCUS -> {
-                        Slider(
-                            value = focusValue,
-                            onValueChange = { value ->
-                                focusValue = value
-                                onFocusChange(value)
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = SliderDefaults.colors(
-                                thumbColor = Color(0xFFFFC107),
-                                activeTrackColor = Color(0xFFFFC107),
-                                inactiveTrackColor = Color.White.copy(alpha = 0.3f)
-                            )
-                        )
-                    }
-                    ManualTarget.NONE -> { /* No slider */ }
-                }
-            }
+            )
         }
         
-        // Error overlay - topmost layer with countdown
+        // LAYER 6 (Topmost): Error overlay with countdown
         if (hasError) {
             Box(
                 modifier = Modifier

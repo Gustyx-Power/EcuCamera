@@ -87,4 +87,51 @@ object GalleryManager {
             Log.e(TAG, "Error opening gallery", e)
         }
     }
+    
+    /**
+     * Retrieves a list of recent image URIs from MediaStore.
+     * Fetches the last 20 images sorted by date taken (most recent first).
+     * 
+     * @param context Application context
+     * @param limit Maximum number of images to retrieve (default: 20)
+     * @return List of image content URIs
+     */
+    fun getRecentImages(context: Context, limit: Int = 20): List<Uri> {
+        val imageUris = mutableListOf<Uri>()
+        
+        val projection = arrayOf(
+            MediaStore.Images.Media._ID,
+            MediaStore.Images.Media.DATE_TAKEN,
+            MediaStore.Images.Media.DATA
+        )
+        
+        val sortOrder = "${MediaStore.Images.Media.DATE_TAKEN} DESC"
+        
+        try {
+            context.contentResolver.query(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                projection,
+                null,
+                null,
+                sortOrder
+            )?.use { cursor ->
+                val idColumn = cursor.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
+                var count = 0
+                
+                while (cursor.moveToNext() && count < limit) {
+                    val id = cursor.getLong(idColumn)
+                    val contentUri = ContentUris.withAppendedId(
+                        MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                        id
+                    )
+                    imageUris.add(contentUri)
+                    count++
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error loading recent images", e)
+        }
+        
+        return imageUris
+    }
 }
