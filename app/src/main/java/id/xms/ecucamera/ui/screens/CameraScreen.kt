@@ -1,6 +1,7 @@
 package id.xms.ecucamera.ui.screens
 
 import android.graphics.Bitmap
+import android.media.MediaActionSound
 import android.view.Surface
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -22,6 +23,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -91,9 +93,20 @@ fun CameraScreen(
     // Shutter animation state
     var triggerShutterAnim by remember { mutableStateOf(false) }
     
-    // Load initial thumbnail
+    // Audio feedback setup
+    val mediaActionSound = remember { MediaActionSound() }
+    
+    // Load shutter sound and initial thumbnail
     LaunchedEffect(Unit) {
+        mediaActionSound.load(MediaActionSound.SHUTTER_CLICK)
         latestThumbnail = GalleryManager.getLastImageThumbnail(context)
+    }
+    
+    // Cleanup audio resources
+    DisposableEffect(Unit) {
+        onDispose {
+            mediaActionSound.release()
+        }
     }
     
     // State locking to prevent flicker
@@ -179,13 +192,16 @@ fun CameraScreen(
                 GalleryManager.openGallery(context)
             },
             onShutterClick = {
-                // Trigger shutter animation immediately
+                // 1. Play shutter sound immediately
+                mediaActionSound.play(MediaActionSound.SHUTTER_CLICK)
+                
+                // 2. Trigger visual feedback (black flash)
                 triggerShutterAnim = true
                 
-                // Take the picture
+                // 3. Take the picture
                 onShutterClick()
                 
-                // Reload thumbnail after a short delay to allow image to be saved
+                // 4. Reload thumbnail after a short delay to allow image to be saved
                 coroutineScope.launch {
                     delay(500)
                     latestThumbnail = GalleryManager.getLastImageThumbnail(context)
