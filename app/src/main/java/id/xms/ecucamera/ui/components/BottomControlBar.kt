@@ -28,21 +28,38 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import id.xms.ecucamera.R
+import id.xms.ecucamera.ui.model.CameraMode
+import id.xms.ecucamera.ui.model.ManualTarget
 
 @Composable
 fun BottomControlBar(
     currentZoom: Float,
     onZoomChange: (Float) -> Unit,
-    selectedMode: String,
-    onModeChange: (String) -> Unit,
+    selectedMode: CameraMode,
+    onModeChange: (CameraMode) -> Unit,
     onGalleryClick: () -> Unit,
     onShutterClick: () -> Unit,
     onSwitchCamera: () -> Unit,
+    activeManualTarget: ManualTarget = ManualTarget.NONE,
+    onManualTargetChange: (ManualTarget) -> Unit = {},
+    isoDisplayValue: String = "100",
+    shutterDisplayValue: String = "1/60",
+    focusDisplayValue: String = "2.0m",
     modifier: Modifier = Modifier
 ) {
+    val modes = listOf(
+        CameraMode.NIGHT,
+        CameraMode.PORTRAIT,
+        CameraMode.PHOTO,
+        CameraMode.VIDEO,
+        CameraMode.PRO
+    )
+    
     Box(
         modifier = modifier
             .fillMaxWidth()
@@ -62,20 +79,34 @@ fun BottomControlBar(
                 .padding(horizontal = 16.dp)
                 .padding(bottom = 50.dp)
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.Center
-            ) {
-                listOf(1.0f, 2.0f, 5.0f).forEach { zoom ->
-                    Text(
-                        text = "${zoom.toInt()}x",
-                        color = if (currentZoom == zoom) Color(0xFFFFC107) else Color.White,
-                        fontSize = 14.sp,
-                        fontWeight = if (currentZoom == zoom) FontWeight.Bold else FontWeight.Normal,
-                        modifier = Modifier
-                            .clickable { onZoomChange(zoom) }
-                            .padding(horizontal = 12.dp, vertical = 4.dp)
-                    )
+            if (selectedMode == CameraMode.PRO) {
+                ManualControlsSelector(
+                    activeTarget = activeManualTarget,
+                    onTargetChange = onManualTargetChange,
+                    isoDisplayValue = isoDisplayValue,
+                    shutterDisplayValue = shutterDisplayValue,
+                    focusDisplayValue = focusDisplayValue
+                )
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.Center
+                ) {
+                    listOf(
+                        1.0f to R.string.zoom_1x,
+                        2.0f to R.string.zoom_2x,
+                        5.0f to R.string.zoom_5x
+                    ).forEach { (zoom, stringRes) ->
+                        Text(
+                            text = stringResource(stringRes),
+                            color = if (currentZoom == zoom) Color(0xFFFFC107) else Color.White,
+                            fontSize = 14.sp,
+                            fontWeight = if (currentZoom == zoom) FontWeight.Bold else FontWeight.Normal,
+                            modifier = Modifier
+                                .clickable { onZoomChange(zoom) }
+                                .padding(horizontal = 12.dp, vertical = 4.dp)
+                        )
+                    }
                 }
             }
             
@@ -85,9 +116,9 @@ fun BottomControlBar(
                 horizontalArrangement = Arrangement.spacedBy(24.dp),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                items(listOf("Malam", "Potret", "Foto", "Video")) { mode ->
+                items(modes) { mode ->
                     Text(
-                        text = mode,
+                        text = stringResource(mode.labelRes),
                         color = if (mode == selectedMode) Color(0xFFFFC107) else Color.White,
                         fontSize = 16.sp,
                         fontWeight = if (mode == selectedMode) FontWeight.Bold else FontWeight.Normal,
@@ -112,7 +143,7 @@ fun BottomControlBar(
                 IconButton(onClick = onGalleryClick) {
                     Icon(
                         imageVector = Icons.Filled.Photo,
-                        contentDescription = "Gallery",
+                        contentDescription = stringResource(R.string.cd_open_gallery),
                         tint = Color.White,
                         modifier = Modifier.size(32.dp)
                     )
@@ -123,7 +154,7 @@ fun BottomControlBar(
                 IconButton(onClick = onSwitchCamera) {
                     Icon(
                         imageVector = Icons.Filled.CameraFront,
-                        contentDescription = "Switch Camera",
+                        contentDescription = stringResource(R.string.cd_switch_camera),
                         tint = Color.White,
                         modifier = Modifier.size(32.dp)
                     )

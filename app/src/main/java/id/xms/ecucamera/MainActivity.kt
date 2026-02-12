@@ -87,9 +87,12 @@ class MainActivity : ComponentActivity() {
         checkAndRequestCameraPermission()
         
         setContent {
+            val cameraState by cameraEngine.cameraState.collectAsState()
+            
             EcuCameraTheme {
                 CameraScreen(
                     histogramData = histogramDataCsv,
+                    cameraState = cameraState,
                     onSurfaceReady = { surface ->
                         currentSurface = surface
                         startCameraEngine()
@@ -113,7 +116,20 @@ class MainActivity : ComponentActivity() {
                     },
                     onSwitchCamera = {
                         
-                    }
+                    },
+                    onManualModeChange = { isManual ->
+                        cameraEngine.setManualMode(isManual)
+                    },
+                    onIsoChange = { value ->
+                        cameraEngine.updateISO(value)
+                    },
+                    onShutterChange = { value ->
+                        cameraEngine.updateShutter(value)
+                    },
+                    onFocusChange = { value ->
+                        cameraEngine.updateFocus(value)
+                    },
+                    onCloseApp = { finish() }
                 )
             }
         }
