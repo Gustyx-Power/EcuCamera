@@ -1,5 +1,6 @@
 package id.xms.ecucamera.ui.screens
 
+import android.graphics.Bitmap
 import android.view.Surface
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -27,12 +28,14 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -43,10 +46,13 @@ import id.xms.ecucamera.R
 import id.xms.ecucamera.engine.core.CameraState
 import id.xms.ecucamera.ui.components.BottomControlBar
 import id.xms.ecucamera.ui.components.TopControlBar
+import id.xms.ecucamera.ui.components.hud.ShutterEffectOverlay
 import id.xms.ecucamera.ui.model.CameraMode
 import id.xms.ecucamera.ui.model.ManualTarget
 import id.xms.ecucamera.ui.screens.viewfinder.ViewfinderScreen
+import id.xms.ecucamera.utils.GalleryManager
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @Composable
 fun CameraScreen(
@@ -64,8 +70,11 @@ fun CameraScreen(
     onShutterChange: (Float) -> Unit = {},
     onFocusChange: (Float) -> Unit = {},
     onCloseApp: () -> Unit = {},
+    onPhotoTaken: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
     var currentZoom by remember { mutableFloatStateOf(1.0f) }
     var flashMode by remember { mutableIntStateOf(0) }
     var selectedMode by remember { mutableStateOf(CameraMode.PHOTO) }
@@ -75,6 +84,17 @@ fun CameraScreen(
     var focusValue by remember { mutableFloatStateOf(0.5f) }
     
     var activeManualTarget by remember { mutableStateOf(ManualTarget.NONE) }
+    
+    // Gallery thumbnail state
+    var latestThumbnail by remember { mutableStateOf<Bitmap?>(null) }
+    
+    // Shutter animation state
+    var triggerShutterAnim by remember { mutableStateOf(false) }
+    
+    // Load initial thumbnail
+    LaunchedEffect(Unit) {
+        latestThumbnail = GalleryManager.getLastImageThumbnail(context)
+    }
     
     // State locking to prevent flicker
     var hasError by remember { mutableStateOf(false) }
@@ -88,12 +108,20 @@ fun CameraScreen(
     val isProMode = selectedMode == CameraMode.PRO
     
     Box(modifier = modifier.fillMaxSize()) {
+        // 1. Camera Preview
         ViewfinderScreen(
             onSurfaceReady = onSurfaceReady,
             onSurfaceDestroyed = onSurfaceDestroyed,
             onTouchEvent = onTouchEvent
         )
         
+        // 2. Shutter Effect Overlay (Black flash animation)
+        ShutterEffectOverlay(
+            trigger = triggerShutterAnim,
+            onFinished = { triggerShutterAnim = false }
+        )
+        
+        // 3. Grid Overlay
         Canvas(modifier = Modifier.fillMaxSize()) {
             val width = size.width
             val height = size.height
@@ -147,8 +175,22 @@ fun CameraScreen(
                     onManualModeChange(isNowProMode)
                 }
             },
-            onGalleryClick = { },
-            onShutterClick = onShutterClick,
+            onGalleryClick = {
+                GalleryManager.openGallery(context)
+            },
+            onShutterClick = {
+                // Trigger shutter animation immediately
+                triggerShutterAnim = true
+                
+                // Take the picture
+                onShutterClick()
+                
+                // Reload thumbnail after a short delay to allow image to be saved
+                coroutineScope.launch {
+                    delay(500)
+                    latestThumbnail = GalleryManager.getLastImageThumbnail(context)
+                }
+            },
             onSwitchCamera = onSwitchCamera,
             activeManualTarget = activeManualTarget,
             onManualTargetChange = { target ->
@@ -157,6 +199,7 @@ fun CameraScreen(
             isoDisplayValue = "${(100 + isoValue * 3100).toInt()}",
             shutterDisplayValue = "1/${(1 + shutterValue * 999).toInt()}",
             focusDisplayValue = "${String.format("%.1f", focusValue * 10)}m",
+            galleryThumbnail = latestThumbnail,
             modifier = Modifier.align(Alignment.BottomCenter)
         )
         
