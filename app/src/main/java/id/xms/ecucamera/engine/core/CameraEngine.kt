@@ -129,6 +129,7 @@ class CameraEngine(private val context: Context) {
                     updateState(CameraState.Error(errorMsg))
                     return@launch
                 }
+                lensManager.setAvailableCameras(cameraManager)
                 
                 currentCameraId = cameraId
                 updateState(CameraState.Opening)
@@ -177,6 +178,13 @@ class CameraEngine(private val context: Context) {
             
             if (newId == oldId) {
                 Log.d(TAG, "Camera switch ignored - already using $newId")
+                return@launch
+            }
+            
+            // Validate camera ID exists before switching
+            val availableCameras = cameraManager.cameraIdList
+            if (!availableCameras.contains(newId)) {
+                Log.w(TAG, "Camera $newId not available on this device. Available: ${availableCameras.joinToString()}. Staying on current camera $oldId.")
                 return@launch
             }
             
@@ -406,7 +414,22 @@ class CameraEngine(private val context: Context) {
     fun setZoom(zoomLevel: Float) {
         engineScope.launch {
             try {
-                zoomController.setZoom(zoomLevel)
+                // Clamp zoom to minimum of 1.0x if camera switching would be needed
+                val clampedZoom = if (zoomLevel < 1.0f) {
+                    val targetCameraId = lensManager.getLensForZoom(zoomLevel)
+                    val availableCameras = cameraManager.cameraIdList
+                    
+                    if (!availableCameras.contains(targetCameraId)) {
+                        Log.w(TAG, "Zoom $zoomLevel would require camera $targetCameraId which is not available. Clamping to 1.0x")
+                        1.0f
+                    } else {
+                        zoomLevel
+                    }
+                } else {
+                    zoomLevel
+                }
+                
+                zoomController.setZoom(clampedZoom)
                 updateRepeatingRequest()
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to set zoom", e)
@@ -549,6 +572,25 @@ class CameraEngine(private val context: Context) {
     
     fun getCurrentCameraId(): String? = currentCameraId
     fun isReady(): Boolean = _cameraState.value is CameraState.Open || _cameraState.value is CameraState.Configured
+    
+    /**
+     * Get list of available camera IDs on this device
+     */
+    fun getAvailableCameraIds(): List<String> {
+        return try {
+            cameraManager.cameraIdList.toList()
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to get available cameras", e)
+            emptyList()
+        }
+    }
+    
+    /**
+     * Check if a specific camera ID is available
+     */
+    fun isCameraAvailable(cameraId: String): Boolean {
+        return getAvailableCameraIds().contains(cameraId)
+    }
     
     fun destroy() {
         Log.d(TAG, "Destroying Camera Engine")

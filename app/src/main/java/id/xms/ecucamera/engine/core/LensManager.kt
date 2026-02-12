@@ -1,6 +1,8 @@
 package id.xms.ecucamera.engine.core
 
+import android.content.Context
 import android.graphics.Rect
+import android.hardware.camera2.CameraManager
 import android.util.Log
 
 sealed class LensType(val id: String, val baseZoom: Float) {
@@ -15,11 +17,34 @@ class LensManager {
         private const val TAG = "ECU_LENS"
     }
     
+    private var availableCameraIds: List<String> = emptyList()
+    
+    /**
+     * Initialize with available camera IDs from the device
+     */
+    fun setAvailableCameras(cameraManager: CameraManager) {
+        availableCameraIds = cameraManager.cameraIdList.toList()
+        Log.d(TAG, "Available cameras: ${availableCameraIds.joinToString()}")
+    }
+    
+    /**
+     * Check if a specific camera ID is available on this device
+     */
+    fun isCameraAvailable(cameraId: String): Boolean {
+        return availableCameraIds.contains(cameraId)
+    }
+    
     fun getLensForZoom(ratio: Float): String {
         return when {
             ratio < 1.0f -> {
-                Log.d(TAG, "Zoom ratio $ratio -> Ultra-Wide lens (ID: 2)")
-                LensType.UltraWide.id
+                val ultraWideId = LensType.UltraWide.id
+                if (isCameraAvailable(ultraWideId)) {
+                    Log.d(TAG, "Zoom ratio $ratio -> Ultra-Wide lens (ID: $ultraWideId)")
+                    ultraWideId
+                } else {
+                    Log.d(TAG, "Zoom ratio $ratio -> Ultra-Wide not available, using Wide lens (ID: 0)")
+                    LensType.Wide.id
+                }
             }
             else -> {
                 Log.d(TAG, "Zoom ratio $ratio -> Wide lens (ID: 0)")
@@ -29,8 +54,14 @@ class LensManager {
     }
     
     fun getMacroLens(): String {
-        Log.d(TAG, "Macro mode -> Macro lens (ID: 3)")
-        return LensType.Macro.id
+        val macroId = LensType.Macro.id
+        return if (isCameraAvailable(macroId)) {
+            Log.d(TAG, "Macro mode -> Macro lens (ID: $macroId)")
+            macroId
+        } else {
+            Log.d(TAG, "Macro lens not available, using Wide lens (ID: 0)")
+            LensType.Wide.id
+        }
     }
     
     fun calculateCropRegion(sensorSize: Rect, zoomRatio: Float): Rect {
