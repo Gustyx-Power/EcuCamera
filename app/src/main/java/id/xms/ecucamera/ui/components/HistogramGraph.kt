@@ -3,13 +3,15 @@ package id.xms.ecucamera.ui.components
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.runtime.*
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
+import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.*
-import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Fill
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.unit.dp
 
 @Composable
@@ -17,83 +19,63 @@ fun HistogramGraph(
     dataCsv: String,
     modifier: Modifier = Modifier
 ) {
-    // Parse CSV data with safe handling
-    val histogramData = remember(dataCsv) {
-        if (dataCsv.isBlank()) {
-            emptyList()
-        } else {
-            try {
-                dataCsv.split(",")
-                    .mapNotNull { it.trim().toIntOrNull() }
-                    .takeIf { it.size == 256 } ?: emptyList()
-            } catch (e: Exception) {
-                emptyList()
-            }
-        }
-    }
-    
-    // Reusable Path object to avoid allocations in onDraw
-    val path = remember { Path() }
-    
     Box(
         modifier = modifier
-            .size(100.dp, 60.dp)
-            .clip(RoundedCornerShape(4.dp))
-            .background(Color.Black.copy(alpha = 0.6f))
+            .width(120.dp)
+            .height(80.dp)
+            .background(Color.Black.copy(alpha = 0.4f))
     ) {
-        Canvas(
-            modifier = Modifier.size(100.dp, 60.dp)
-        ) {
-            if (histogramData.isNotEmpty()) {
-                drawSmoothHistogram(histogramData, path)
+        Canvas(modifier = Modifier.matchParentSize()) {
+            if (dataCsv.isEmpty()) return@Canvas
+            
+            // Parse CSV to list of integers
+            val values = try {
+                dataCsv.split(",").mapNotNull { it.trim().toIntOrNull() }
+            } catch (e: Exception) {
+                return@Canvas
             }
+            
+            if (values.isEmpty()) return@Canvas
+            val maxValue = values.maxOrNull() ?: 1
+            if (maxValue == 0) return@Canvas
+            
+            val width = size.width
+            val height = size.height
+            val stepX = width / values.size.toFloat()
+            
+            // Create path for the histogram
+            val path = Path().apply {
+                // Start at bottom-left
+                moveTo(0f, height)
+                
+                // Draw histogram bars
+                values.forEachIndexed { index, value ->
+                    val x = index * stepX
+                    val normalizedHeight = (value.toFloat() / maxValue) * height
+                    val y = height - normalizedHeight
+                    
+                    lineTo(x, y)
+                }
+                
+                // Complete the path back to bottom-right
+                lineTo(width, height)
+                lineTo(0f, height)
+                close()
+            }
+            
+            // Draw filled histogram
+            drawPath(
+                path = path,
+                color = Color.White.copy(alpha = 0.5f),
+                style = Fill
+            )
+            
+            // Draw stroke border for better visibility
+            drawPath(
+                path = path,
+                color = Color.White.copy(alpha = 0.8f),
+                style = Stroke(width = 1f)
+            )
         }
     }
-}
-
-private fun DrawScope.drawSmoothHistogram(data: List<Int>, reusablePath: Path) {
-    val maxValue = data.maxOrNull() ?: 1
-    if (maxValue == 0) return
-    
-    val canvasWidth = size.width
-    val canvasHeight = size.height
-    val stepX = canvasWidth / (data.size - 1).toFloat()
-    
-    // Clear and reset the reusable path
-    reusablePath.reset()
-    
-    // Start from bottom-left
-    reusablePath.moveTo(0f, canvasHeight)
-    
-    // Create smooth curve through histogram points
-    for (i in data.indices) {
-        val x = i * stepX
-        val normalizedValue = data[i].toFloat() / maxValue.toFloat()
-        val y = canvasHeight - (normalizedValue * canvasHeight)
-        
-        if (i == 0) {
-            reusablePath.lineTo(x, y)
-        } else {
-            // Use quadratic bezier for smooth curves
-            val prevX = (i - 1) * stepX
-            val prevNormalizedValue = data[i - 1].toFloat() / maxValue.toFloat()
-            val prevY = canvasHeight - (prevNormalizedValue * canvasHeight)
-            
-            val controlX = (prevX + x) / 2f
-            val controlY = (prevY + y) / 2f
-            
-            reusablePath.quadraticBezierTo(controlX, controlY, x, y)
-        }
-    }
-    
-    // Close the path to create a filled area
-    reusablePath.lineTo(canvasWidth, canvasHeight)
-    reusablePath.close()
-    
-    // Draw the filled histogram with white 50% opacity
-    drawPath(
-        path = reusablePath,
-        color = Color(0x80FFFFFF), // White with 50% opacity
-        style = androidx.compose.ui.graphics.drawscope.Fill
-    )
 }
