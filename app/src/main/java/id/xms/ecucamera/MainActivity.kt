@@ -375,28 +375,33 @@ class MainActivity : ComponentActivity() {
                 
                 lifecycleScope.launch {
                     delay(3000)
-                    Log.d(TAG, "Switching to ultra-wide camera")
-                    cameraEngine.switchCamera("2", surface,
-                        onAnalysis = { csvData ->
-                            val currentTime = System.currentTimeMillis()
-                            if (currentTime - lastHistogramUpdate > 33) {
-                                histogramDataCsv = csvData
-                                lastHistogramUpdate = currentTime
-                            }
-                        },
-                        onFocusPeaking = { csvData ->
-                            try {
-                                if (csvData.isNotEmpty()) {
-                                    focusBlocks = csvData.split(",").mapNotNull { it.toIntOrNull() }
-                                } else {
+                    val ultraWideCameraId = "2"
+                    if (cameraEngine.isCameraAvailable(ultraWideCameraId)) {
+                        Log.d(TAG, "Switching to ultra-wide camera")
+                        cameraEngine.switchCamera(ultraWideCameraId, surface,
+                            onAnalysis = { csvData ->
+                                val currentTime = System.currentTimeMillis()
+                                if (currentTime - lastHistogramUpdate > 33) {
+                                    histogramDataCsv = csvData
+                                    lastHistogramUpdate = currentTime
+                                }
+                            },
+                            onFocusPeaking = { csvData ->
+                                try {
+                                    if (csvData.isNotEmpty()) {
+                                        focusBlocks = csvData.split(",").mapNotNull { it.toIntOrNull() }
+                                    } else {
+                                        focusBlocks = listOf()
+                                    }
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "Failed to parse focus peaking data", e)
                                     focusBlocks = listOf()
                                 }
-                            } catch (e: Exception) {
-                                Log.e(TAG, "Failed to parse focus peaking data", e)
-                                focusBlocks = listOf()
                             }
-                        }
-                    )
+                        )
+                    } else {
+                        Log.d(TAG, "Ultra-wide camera (ID: $ultraWideCameraId) not available on this device. Available cameras: ${cameraEngine.getAvailableCameraIds().joinToString()}")
+                    }
                 }
                 
             } catch (e: Exception) {
