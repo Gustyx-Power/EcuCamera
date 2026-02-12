@@ -15,7 +15,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import id.xms.ecucamera.R
 
 @Composable
 fun TopControlBar(
@@ -40,7 +42,7 @@ fun TopControlBar(
         IconButton(onClick = onFlashToggle) {
             Icon(
                 imageVector = if (flashMode == 0) Icons.Filled.FlashOff else Icons.Filled.FlashOn,
-                contentDescription = if (flashMode == 0) "Flash Off" else "Flash On",
+                contentDescription = stringResource(if (flashMode == 0) R.string.cd_flash_off else R.string.cd_flash_on),
                 tint = Color.White,
                 modifier = Modifier.size(28.dp)
             )
@@ -49,7 +51,7 @@ fun TopControlBar(
         IconButton(onClick = onSettingsClick) {
             Icon(
                 imageVector = Icons.Filled.Settings,
-                contentDescription = "Settings",
+                contentDescription = stringResource(R.string.cd_settings),
                 tint = Color.White,
                 modifier = Modifier.size(28.dp)
             )
