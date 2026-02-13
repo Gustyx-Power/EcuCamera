@@ -39,6 +39,7 @@ class MainActivity : ComponentActivity() {
     
     private var histogramDataCsv by mutableStateOf("")
     private var lastHistogramUpdate by mutableStateOf(0L)
+    private var lastSavedImageUri by mutableStateOf<android.net.Uri?>(null)
     
     private var currentZoom by mutableStateOf(1.0f)
     private var scaleGestureDetector: ScaleGestureDetector? = null
@@ -100,6 +101,14 @@ class MainActivity : ComponentActivity() {
         cameraEngine = CameraEngine(this)
         hardwareProbe = HardwareProbe(this)
         
+        // Set up image saved callback
+        cameraEngine.setOnImageSavedCallback { uri ->
+            if (uri != null) {
+                Log.d(TAG, "Image saved callback: $uri")
+                lastSavedImageUri = uri
+            }
+        }
+        
         // Set initial device rotation
         updateDeviceRotation()
         
@@ -124,6 +133,7 @@ class MainActivity : ComponentActivity() {
             val targetCropRatio by cameraEngine.targetCropRatio.collectAsState()
             val deviceOrientation by cameraEngine.deviceOrientation.collectAsState()
             val lensFacing = cameraEngine.lensFacing
+            val savedImageUri by remember { derivedStateOf { lastSavedImageUri } }
             
             EcuCameraTheme {
                 CameraScreen(
@@ -133,6 +143,7 @@ class MainActivity : ComponentActivity() {
                     targetCropRatio = targetCropRatio,
                     deviceOrientation = deviceOrientation,
                     lensFacing = lensFacing,
+                    savedImageUri = savedImageUri,
                     onSurfaceReady = { surface ->
                         Log.d(TAG, "onSurfaceReady: Surface stored")
                         currentSurface = surface
