@@ -18,6 +18,15 @@ class ImageCaptureManager(private val context: Context) {
     }
     
     private val captureController = CaptureController(context)
+    private var onImageSavedCallback: ((Uri?) -> Unit)? = null
+    
+    /**
+     * Set a callback to be invoked when an image is successfully saved.
+     * @param callback Function that receives the saved image URI
+     */
+    fun setOnImageSavedCallback(callback: (Uri?) -> Unit) {
+        onImageSavedCallback = callback
+    }
     
     fun setupJpegListener(
         jpegReader: ImageReader,
@@ -83,8 +92,10 @@ class ImageCaptureManager(private val context: Context) {
                     val uri = captureController.saveImage(finalBuffer, 0)
                     if (uri != null) {
                         Log.d(TAG, "Photo saved: $uri (${finalBitmap.width}x${finalBitmap.height})")
+                        onImageSavedCallback?.invoke(uri)
                     } else {
                         Log.e(TAG, "Failed to save photo")
+                        onImageSavedCallback?.invoke(null)
                     }
                     
                     if (bitmap !== finalBitmap) {
