@@ -7,9 +7,9 @@ import android.media.ImageReader
 import android.os.Handler
 import android.os.HandlerThread
 import android.util.Log
+import android.view.OrientationEventListener
 import android.view.Surface
 import id.xms.ecucamera.bridge.NativeBridge
-import id.xms.ecucamera.engine.controller.CaptureController
 import id.xms.ecucamera.engine.controller.ExposureController
 import id.xms.ecucamera.engine.controller.FocusController
 import id.xms.ecucamera.engine.controller.ZoomController
@@ -20,15 +20,30 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlin.math.abs
 
 class CameraEngine(private val context: Context) {
     
     companion object {
         private const val TAG = "ECU_ENGINE"
+        private const val HARDWARE_ASPECT_RATIO = 4f / 3f
     }
     
     private val _cameraState = MutableStateFlow<CameraState>(CameraState.Closed)
     val cameraState: StateFlow<CameraState> = _cameraState.asStateFlow()
+    
+    private val _previewAspectRatio = MutableStateFlow(HARDWARE_ASPECT_RATIO)
+    val previewAspectRatio: StateFlow<Float> = _previewAspectRatio.asStateFlow()
+    
+    private val _targetCropRatio = MutableStateFlow(HARDWARE_ASPECT_RATIO)
+    val targetCropRatio: StateFlow<Float> = _targetCropRatio.asStateFlow()
+    
+    private val _deviceOrientation = MutableStateFlow(0)
+    val deviceOrientation: StateFlow<Int> = _deviceOrientation.asStateFlow()
+    
+    private var currentAspectRatio: Float = HARDWARE_ASPECT_RATIO
+    private var screenAspectRatio: Float = 0f
+    private var deviceRotation: Int = 0
     
     private val cameraManager: CameraManager by lazy {
         context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
@@ -37,6 +52,7 @@ class CameraEngine(private val context: Context) {
     private var cameraDevice: CameraDevice? = null
     private var captureSession: CameraCaptureSession? = null
     private var currentCameraId: String? = null
+    private var lastCameraId: String? = null
     
     private val sessionManager = SessionManager()
     private val requestManager = RequestManager()
@@ -45,14 +61,15 @@ class CameraEngine(private val context: Context) {
     private val focusController = FocusController()
     private val zoomController = ZoomController()
     private val flashController = FlashController()
-    private val captureController = CaptureController(context)
     
-    private var isManualMode = false
-    private var currentIso = 100
-    private var currentExpTime = 10_000_000L
+    private val cameraControls = CameraControls(
+        exposureController,
+        focusController,
+        zoomController,
+        flashController
+    )
     
-    private var isManualFocusMode = false
-    private var currentFocusDistance = 0.0f
+    private val imageCaptureManager = ImageCaptureManager(context)
     
     private var testImageReader: ImageReader? = null
     private var imageReader: ImageReader? = null
@@ -65,6 +82,164 @@ class CameraEngine(private val context: Context) {
     private val backgroundHandler = Handler(backgroundThread.looper)
     
     private val engineScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    
+    private var orientationEventListener: OrientationEventListener? = null
+    private var currentDeviceOrientationDegrees: Int = 0
+    private var sensorOrientation: Int = 90
+    
+    private fun initializeOrientationListener() {
+        if (orientationEventListener != null) {
+            orientationEventListener?.disable()
+        }
+        
+        try {
+            val cameraId = currentCameraId
+            if (cameraId != null) {
+                val characteristics = cameraManager.getCameraCharacteristics(cameraId)
+                sensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
+                Log.d(TAG, "Camera sensor orientation: $sensorOrientation°")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to get sensor orientation, using default 90°", e)
+            sensorOrientation = 90
+        }
+        
+        orientationEventListener = object : OrientationEventListener(context) {
+            override fun onOrientationChanged(orientation: Int) {
+                if (orientation == ORIENTATION_UNKNOWN) return
+                
+                val snappedOrientation = when (orientation) {
+                    in 45..134 -> 90
+                    in 135..224 -> 180
+                    in 225..314 -> 270
+                    else -> 0
+                }
+                
+                if (currentDeviceOrientationDegrees != snappedOrientation) {
+                    val oldOrientation = currentDeviceOrientationDegrees
+                    currentDeviceOrientationDegrees = snappedOrientation
+                    _deviceOrientation.value = snappedOrientation
+                    Log.d(TAG, "Device orientation changed: $oldOrientation° -> $snappedOrientation° (raw: $orientation°)")
+                }
+            }
+        }
+        
+        orientationEventListener?.enable()
+        Log.d(TAG, "Orientation listener enabled")
+    }
+    
+    fun setAspectRatio(aspectRatio: Float) {
+        if (aspectRatio == currentAspectRatio) return
+        
+        Log.d(TAG, "setAspectRatio (virtual crop): ${String.format("%.3f", currentAspectRatio)} -> ${String.format("%.3f", aspectRatio)}")
+        
+        currentAspectRatio = aspectRatio
+        
+        val resolvedRatio = if (aspectRatio == 0f) {
+            if (screenAspectRatio > 0f) screenAspectRatio else HARDWARE_ASPECT_RATIO
+        } else {
+            aspectRatio
+        }
+        
+        _targetCropRatio.value = resolvedRatio
+        
+        Log.d(TAG, "setAspectRatio: targetCropRatio=${String.format("%.3f", resolvedRatio)}, stream untouched ✓")
+    }
+    
+    fun setDeviceRotation(rotation: Int) {
+        deviceRotation = rotation
+        Log.d(TAG, "Device rotation set to: $rotation")
+    }
+    
+    private fun getJpegOrientation(): Int {
+        if (currentCameraId == null) return 0
+        
+        try {
+            val characteristics = cameraManager.getCameraCharacteristics(currentCameraId!!)
+            val sensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
+            val lensFacing = characteristics.get(CameraCharacteristics.LENS_FACING) ?: CameraCharacteristics.LENS_FACING_BACK
+            
+            val deviceDegrees = when (deviceRotation) {
+                Surface.ROTATION_0 -> 0
+                Surface.ROTATION_90 -> 90
+                Surface.ROTATION_180 -> 180
+                Surface.ROTATION_270 -> 270
+                else -> 0
+            }
+            
+            val jpegOrientation = if (lensFacing == CameraCharacteristics.LENS_FACING_FRONT) {
+                (sensorOrientation - deviceDegrees + 360) % 360
+            } else {
+                (sensorOrientation + deviceDegrees) % 360
+            }
+            
+            Log.d(TAG, "JPEG Orientation: sensor=$sensorOrientation, device=$deviceDegrees, final=$jpegOrientation")
+            return jpegOrientation
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to calculate JPEG orientation", e)
+            return 0
+        }
+    }
+    
+    private fun getOptimalPreviewSize(
+        sizes: Array<android.util.Size>,
+        targetWidth: Int,
+        targetHeight: Int,
+        targetAspectRatio: Float = HARDWARE_ASPECT_RATIO
+    ): android.util.Size {
+        val ASPECT_TOLERANCE = 0.1f
+        val isPortrait = targetHeight > targetWidth
+        
+        Log.d(TAG, "getOptimalPreviewSize: screen=${targetWidth}x${targetHeight}, " +
+                "isPortrait=$isPortrait, targetRatio=${String.format("%.3f", targetAspectRatio)}")
+        
+        val matchingAspectRatioSizes = sizes.filter { size ->
+            val ratio = size.width.toFloat() / size.height.toFloat()
+            abs(ratio - targetAspectRatio) < ASPECT_TOLERANCE
+        }
+        
+        if (matchingAspectRatioSizes.isNotEmpty()) {
+            val optimalSize = if (isPortrait) {
+                matchingAspectRatioSizes
+                    .filter { it.width <= targetHeight * 2 && it.height <= targetWidth * 2 }
+                    .maxByOrNull { it.width * it.height }
+                    ?: matchingAspectRatioSizes.maxByOrNull { it.width * it.height }!!
+            } else {
+                matchingAspectRatioSizes
+                    .filter { it.width <= targetWidth * 2 && it.height <= targetHeight * 2 }
+                    .maxByOrNull { it.width * it.height }
+                    ?: matchingAspectRatioSizes.maxByOrNull { it.width * it.height }!!
+            }
+            
+            Log.d(TAG, "Selected optimal preview size: ${optimalSize.width}x${optimalSize.height} " +
+                    "(aspect ratio: ${String.format("%.3f", optimalSize.width.toFloat() / optimalSize.height)})")
+            return optimalSize
+        }
+        
+        val fallbackSize = sizes.maxByOrNull { it.width * it.height }!!
+        Log.w(TAG, "No matching aspect ratio found, using fallback: ${fallbackSize.width}x${fallbackSize.height}")
+        return fallbackSize
+    }
+    
+    private fun getOptimalCaptureSize(sizes: Array<android.util.Size>): android.util.Size {
+        val ASPECT_TOLERANCE = 0.1f
+        
+        val matchingAspectRatioSizes = sizes.filter { size ->
+            val ratio = size.width.toFloat() / size.height.toFloat()
+            abs(ratio - HARDWARE_ASPECT_RATIO) < ASPECT_TOLERANCE
+        }
+        
+        if (matchingAspectRatioSizes.isNotEmpty()) {
+            val optimalSize = matchingAspectRatioSizes.maxByOrNull { it.width * it.height }!!
+            Log.d(TAG, "Selected optimal capture size (4:3 locked): ${optimalSize.width}x${optimalSize.height}")
+            return optimalSize
+        }
+        
+        val fallbackSize = sizes.maxByOrNull { it.width * it.height }!!
+        Log.w(TAG, "No 4:3 capture size found, fallback: ${fallbackSize.width}x${fallbackSize.height}")
+        return fallbackSize
+    }
+
     
     private val deviceStateCallback = object : CameraDevice.StateCallback() {
         override fun onOpened(camera: CameraDevice) {
@@ -94,24 +269,6 @@ class CameraEngine(private val context: Context) {
         }
     }
     
-    private val sessionStateCallback = object : CameraCaptureSession.StateCallback() {
-        override fun onConfigured(session: CameraCaptureSession) {
-            Log.d(TAG, "Session configured for camera $currentCameraId")
-            captureSession = session
-            updateState(CameraState.Configured)
-        }
-        
-        override fun onConfigureFailed(session: CameraCaptureSession) {
-            Log.e(TAG, "Session configuration failed for camera $currentCameraId")
-            updateState(CameraState.Error("Session configuration failed"))
-        }
-        
-        override fun onClosed(session: CameraCaptureSession) {
-            Log.d(TAG, "Session closed for camera $currentCameraId")
-            captureSession = null
-        }
-    }
-    
     fun openCamera(cameraId: String) {
         engineScope.launch {
             try {
@@ -133,6 +290,8 @@ class CameraEngine(private val context: Context) {
                 
                 currentCameraId = cameraId
                 updateState(CameraState.Opening)
+                
+                initializeOrientationListener()
                 
                 try {
                     val characteristics = cameraManager.getCameraCharacteristics(cameraId)
@@ -181,7 +340,6 @@ class CameraEngine(private val context: Context) {
                 return@launch
             }
             
-            // Validate camera ID exists before switching
             val availableCameras = cameraManager.cameraIdList
             if (!availableCameras.contains(newId)) {
                 Log.w(TAG, "Camera $newId not available on this device. Available: ${availableCameras.joinToString()}. Staying on current camera $oldId.")
@@ -207,6 +365,7 @@ class CameraEngine(private val context: Context) {
             }
         }
     }
+
     
     suspend fun startPreview(viewFinderSurface: Surface, onAnalysis: ((String) -> Unit)? = null, onFocusPeaking: ((String) -> Unit)? = null) {
         previewJob?.cancel()
@@ -219,17 +378,66 @@ class CameraEngine(private val context: Context) {
                     return@launch
                 }
                 
-                if (_cameraState.value !is CameraState.Open) {
-                    Log.e(TAG, "Cannot start preview: Camera not open. Current: ${_cameraState.value}")
+                if (_cameraState.value !is CameraState.Open && _cameraState.value !is CameraState.Configured) {
+                    Log.e(TAG, "Cannot start preview: Camera not ready. Current: ${_cameraState.value}")
                     return@launch
                 }
                 
-                Log.d(TAG, "Starting preview for camera $currentCameraId")
+                Log.d(TAG, "Starting preview for camera $currentCameraId — LOCKED to 4:3")
                 
                 currentViewFinderSurface = viewFinderSurface
                 
-                this@CameraEngine.imageReader = ImageReader.newInstance(640, 480, ImageFormat.YUV_420_888, 2)
-                this@CameraEngine.jpegReader = ImageReader.newInstance(1920, 1080, ImageFormat.JPEG, 1)
+                val characteristics = cameraManager.getCameraCharacteristics(currentCameraId!!)
+                val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
+                
+                if (map == null) {
+                    Log.e(TAG, "Cannot get stream configuration map")
+                    updateState(CameraState.Error("Stream configuration not available"))
+                    return@launch
+                }
+                
+                val displayMetrics = context.resources.displayMetrics
+                val screenWidth = displayMetrics.widthPixels
+                val screenHeight = displayMetrics.heightPixels
+                
+                if (screenAspectRatio == 0f) {
+                    screenAspectRatio = screenWidth.toFloat() / screenHeight.toFloat()
+                    Log.d(TAG, "Screen aspect ratio: ${String.format("%.3f", screenAspectRatio)} (${screenWidth}x${screenHeight})")
+                }
+                
+                val yuvSizes = map.getOutputSizes(ImageFormat.YUV_420_888)
+                val jpegSizes = map.getOutputSizes(ImageFormat.JPEG)
+                
+                val previewSize = getOptimalPreviewSize(yuvSizes, screenWidth, screenHeight, HARDWARE_ASPECT_RATIO)
+                val captureSize = getOptimalCaptureSize(jpegSizes)
+                
+                _previewAspectRatio.value = HARDWARE_ASPECT_RATIO
+                Log.d(TAG, "Preview locked to 4:3: ${previewSize.width}x${previewSize.height}")
+                
+                this@CameraEngine.imageReader = ImageReader.newInstance(
+                    previewSize.width,
+                    previewSize.height,
+                    ImageFormat.YUV_420_888,
+                    2
+                )
+                
+                this@CameraEngine.jpegReader = ImageReader.newInstance(
+                    captureSize.width,
+                    captureSize.height,
+                    ImageFormat.JPEG,
+                    1
+                )
+                
+                Log.d(TAG, "ImageReaders created - Preview: ${previewSize.width}x${previewSize.height}, " +
+                        "Capture: ${captureSize.width}x${captureSize.height} (both 4:3)")
+                
+                try {
+                    if (viewFinderSurface.isValid) {
+                        Log.d(TAG, "Surface configured for preview size: ${previewSize.width}x${previewSize.height}")
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "Could not configure surface fixed size: ${e.message}")
+                }
                 
                 this@CameraEngine.imageReader!!.setOnImageAvailableListener({ reader ->
                     try {
@@ -246,7 +454,7 @@ class CameraEngine(private val context: Context) {
                                 val result = NativeBridge.analyzeFrame(buffer, length, image.width, image.height, stride)
                                 onAnalysis?.invoke(result)
                                 
-                                if (isManualFocusMode) {
+                                if (cameraControls.isInManualFocusMode()) {
                                     try {
                                         val focusResult = NativeBridge.analyzeFocusPeaking(buffer, length, image.width, image.height, stride)
                                         onFocusPeaking?.invoke(focusResult)
@@ -267,32 +475,12 @@ class CameraEngine(private val context: Context) {
                     }
                 }, backgroundHandler)
                 
-                this@CameraEngine.jpegReader!!.setOnImageAvailableListener({ reader ->
-                    try {
-                        val safeReader = this@CameraEngine.jpegReader ?: return@setOnImageAvailableListener
-                        val image = safeReader.acquireLatestImage() ?: return@setOnImageAvailableListener
-                        
-                        try {
-                            Log.d(TAG, "JPEG captured: ${image.width}x${image.height}")
-                            
-                            val plane = image.planes[0]
-                            val buffer = plane.buffer
-                            
-                            val uri = captureController.saveImage(buffer, 0)
-                            if (uri != null) {
-                                Log.d(TAG, "Photo saved to: $uri")
-                            } else {
-                                Log.e(TAG, "Failed to save photo")
-                            }
-                            
-                        } finally {
-                            image.close()
-                        }
-                        
-                    } catch (e: Exception) {
-                        Log.e(TAG, "JPEG listener error", e)
-                    }
-                }, backgroundHandler)
+                imageCaptureManager.setupJpegListener(
+                    this@CameraEngine.jpegReader!!,
+                    targetCropRatio = { _targetCropRatio.value },
+                    deviceOrientationDegrees = { currentDeviceOrientationDegrees },
+                    sensorOrientation = { sensorOrientation }
+                )
                 
                 val targets = listOf(viewFinderSurface, this@CameraEngine.imageReader!!.surface, this@CameraEngine.jpegReader!!.surface)
                 
@@ -307,27 +495,12 @@ class CameraEngine(private val context: Context) {
                                 builder.addTarget(viewFinderSurface)
                                 builder.addTarget(this@CameraEngine.imageReader!!.surface)
                                 
-                                if (zoomController.isZoomSupported()) {
-                                    val zoomRect = zoomController.calculateZoomRect(zoomController.getZoomLevel())
-                                    builder.set(CaptureRequest.SCALER_CROP_REGION, zoomRect)
-                                }
-                                
-                                exposureController.applyToBuilder(builder, isManualMode, currentIso, currentExpTime)
-                                
-                                if (isManualFocusMode) {
-                                    focusController.applyManualFocus(builder, currentFocusDistance)
-                                } else {
-                                    focusController.applyAutoFocus(builder)
-                                }
-                                
-                                flashController.applyToBuilder(builder, isManualMode)
-                                
-                                builder.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
+                                cameraControls.applyToPreviewBuilder(builder)
                                 
                                 session.setRepeatingRequest(builder.build(), null, backgroundHandler)
                                 
                                 updateState(CameraState.Configured)
-                                Log.d(TAG, "Preview running")
+                                Log.d(TAG, "Preview running — 4:3 locked, virtual crop active ✓")
                                 
                             } catch (e: IllegalStateException) {
                                 Log.w(TAG, "Session closed during preview start")
@@ -350,6 +523,7 @@ class CameraEngine(private val context: Context) {
             }
         }
     }
+
     
     fun takePicture() {
         engineScope.launch {
@@ -363,29 +537,16 @@ class CameraEngine(private val context: Context) {
                     return@launch
                 }
                 
-                Log.d(TAG, "Taking picture")
+                Log.d(TAG, "Taking picture — will software-crop to ${String.format("%.3f", _targetCropRatio.value)}")
                 
                 val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
                 builder.addTarget(jpegReader.surface)
                 
-                if (zoomController.isZoomSupported()) {
-                    val zoomRect = zoomController.calculateZoomRect(zoomController.getZoomLevel())
-                    builder.set(CaptureRequest.SCALER_CROP_REGION, zoomRect)
-                }
+                cameraControls.applyToCaptureBuilder(builder)
                 
-                exposureController.applyToBuilder(builder, isManualMode, currentIso, currentExpTime)
-                
-                if (isManualFocusMode) {
-                    focusController.applyManualFocus(builder, currentFocusDistance)
-                } else {
-                    focusController.applyAutoFocus(builder)
-                }
-                
-                flashController.applyToCaptureBuilder(builder, isManualMode)
-                
-                builder.set(CaptureRequest.JPEG_ORIENTATION, 0)
+                val jpegOrientation = getJpegOrientation()
+                builder.set(CaptureRequest.JPEG_ORIENTATION, jpegOrientation)
                 builder.set(CaptureRequest.JPEG_QUALITY, 95.toByte())
-                builder.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
                 
                 session.capture(builder.build(), object : CameraCaptureSession.CaptureCallback() {
                     override fun onCaptureCompleted(
@@ -410,11 +571,10 @@ class CameraEngine(private val context: Context) {
             }
         }
     }
-
+    
     fun setZoom(zoomLevel: Float) {
         engineScope.launch {
             try {
-                // Clamp zoom to minimum of 1.0x if camera switching would be needed
                 val clampedZoom = if (zoomLevel < 1.0f) {
                     val targetCameraId = lensManager.getLensForZoom(zoomLevel)
                     val availableCameras = cameraManager.cameraIdList
@@ -429,7 +589,7 @@ class CameraEngine(private val context: Context) {
                     zoomLevel
                 }
                 
-                zoomController.setZoom(clampedZoom)
+                cameraControls.setZoom(clampedZoom)
                 updateRepeatingRequest()
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to set zoom", e)
@@ -439,51 +599,45 @@ class CameraEngine(private val context: Context) {
     
     fun setFlash(mode: Int) {
         engineScope.launch {
-            flashController.setFlashMode(mode)
+            cameraControls.setFlash(mode)
             updateRepeatingRequest()
         }
     }
     
     fun cycleFlash() {
         engineScope.launch {
-            flashController.cycleFlashMode()
+            cameraControls.cycleFlash()
             updateRepeatingRequest()
         }
     }
-
+    
     fun setManualFocusMode(enabled: Boolean) {
         engineScope.launch {
-            isManualFocusMode = enabled
-            Log.d(TAG, "Manual focus: ${if (enabled) "ON" else "OFF"}")
+            cameraControls.setManualFocusMode(enabled)
             updateRepeatingRequest()
         }
     }
     
     fun updateFocus(sliderValue: Float) {
         engineScope.launch {
-            currentFocusDistance = focusController.calculateFocusDistance(sliderValue)
-            if (isManualFocusMode) {
+            cameraControls.updateFocus(sliderValue)
+            if (cameraControls.isInManualFocusMode()) {
                 updateRepeatingRequest()
             }
         }
     }
     
-    fun getFocusController(): FocusController = focusController
-    fun isManualFocusSupported(): Boolean = focusController.isManualFocusSupported()
-    fun isInManualFocusMode(): Boolean = isManualFocusMode
-
     fun setManualMode(enabled: Boolean) {
         engineScope.launch {
-            isManualMode = enabled
-            Log.d(TAG, "Manual exposure: ${if (enabled) "ON" else "OFF"}")
+            cameraControls.setManualMode(enabled)
             updateRepeatingRequest()
         }
     }
     
     fun updateISO(sliderValue: Float) {
         engineScope.launch {
-            currentIso = exposureController.calculateISO(sliderValue)
-            if (isManualMode) {
+            cameraControls.updateISO(sliderValue)
+            if (cameraControls.isInManualMode()) {
                 updateRepeatingRequest()
             }
         }
@@ -491,8 +645,8 @@ class CameraEngine(private val context: Context) {
     
     fun updateShutter(sliderValue: Float) {
         engineScope.launch {
-            currentExpTime = exposureController.calculateExposureTime(sliderValue)
-            if (isManualMode) {
+            cameraControls.updateShutter(sliderValue)
+            if (cameraControls.isInManualMode()) {
                 updateRepeatingRequest()
             }
         }
@@ -505,44 +659,26 @@ class CameraEngine(private val context: Context) {
             val reader = imageReader ?: return
             val viewFinder = currentViewFinderSurface ?: return
             
-            val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
-            builder.addTarget(viewFinder)
-            builder.addTarget(reader.surface)
-            
-            if (zoomController.isZoomSupported()) {
-                val zoomRect = zoomController.calculateZoomRect(zoomController.getZoomLevel())
-                builder.set(CaptureRequest.SCALER_CROP_REGION, zoomRect)
-            }
-            
-            exposureController.applyToBuilder(builder, isManualMode, currentIso, currentExpTime)
-            
-            if (isManualFocusMode) {
-                focusController.applyManualFocus(builder, currentFocusDistance)
-            } else {
-                focusController.applyAutoFocus(builder)
-            }
-            
-            flashController.applyToBuilder(builder, isManualMode)
-            
-            builder.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
-            
-            session.setRepeatingRequest(builder.build(), null, backgroundHandler)
-            
+            cameraControls.updateRepeatingRequest(device, session, viewFinder, reader.surface, backgroundHandler)
         } catch (e: Exception) {
             Log.e(TAG, "Failed to update repeating request", e)
         }
     }
     
+    fun getFocusController(): FocusController = focusController
+    fun isManualFocusSupported(): Boolean = focusController.isManualFocusSupported()
+    fun isInManualFocusMode(): Boolean = cameraControls.isInManualFocusMode()
+    
     fun getExposureController(): ExposureController = exposureController
     fun isManualExposureSupported(): Boolean = exposureController.isManualExposureSupported()
-    fun isInManualMode(): Boolean = isManualMode
+    fun isInManualMode(): Boolean = cameraControls.isInManualMode()
     
     fun getZoomController(): ZoomController = zoomController
     fun getFlashController(): FlashController = flashController
     
     fun isZoomSupported(): Boolean = zoomController.isZoomSupported()
     fun isFlashSupported(): Boolean = flashController.isFlashSupported()
-
+    
     private fun updateState(newState: CameraState) {
         _cameraState.value = newState
     }
@@ -550,32 +686,31 @@ class CameraEngine(private val context: Context) {
     private fun cleanup() {
         previewJob?.cancel()
         previewJob = null
-        
         captureSession?.close()
         captureSession = null
-        
         testImageReader?.close()
         testImageReader = null
-        
         imageReader?.close()
         imageReader = null
-        
         jpegReader?.close()
         jpegReader = null
-        
         cameraDevice?.close()
         cameraDevice = null
         
+        orientationEventListener?.disable()
+        orientationEventListener = null
+        currentDeviceOrientationDegrees = 0
+        
+        if (currentCameraId != null) lastCameraId = currentCameraId
         currentCameraId = null
         currentViewFinderSurface = null
     }
     
     fun getCurrentCameraId(): String? = currentCameraId
+    fun getLastCameraId(): String? = lastCameraId
+    val isClosed: Boolean get() = _cameraState.value is CameraState.Closed
     fun isReady(): Boolean = _cameraState.value is CameraState.Open || _cameraState.value is CameraState.Configured
     
-    /**
-     * Get list of available camera IDs on this device
-     */
     fun getAvailableCameraIds(): List<String> {
         return try {
             cameraManager.cameraIdList.toList()
@@ -585,15 +720,14 @@ class CameraEngine(private val context: Context) {
         }
     }
     
-    /**
-     * Check if a specific camera ID is available
-     */
     fun isCameraAvailable(cameraId: String): Boolean {
         return getAvailableCameraIds().contains(cameraId)
     }
     
     fun destroy() {
         Log.d(TAG, "Destroying Camera Engine")
+        orientationEventListener?.disable()
+        orientationEventListener = null
         engineScope.cancel()
         cleanup()
         backgroundThread.quitSafely()
