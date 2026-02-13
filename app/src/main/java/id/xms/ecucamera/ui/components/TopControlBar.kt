@@ -12,6 +12,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
+import androidx.compose.material.icons.filled.Grid3x3
+import androidx.compose.material.icons.filled.Grid4x4
+import androidx.compose.material.icons.filled.GridOff
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -35,6 +38,8 @@ fun TopControlBar(
     onToggleHistogram: () -> Unit,
     flashMode: Int,
     onFlashToggle: () -> Unit,
+    gridMode: Int,
+    onGridToggle: () -> Unit,
     onSettingsClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
@@ -71,6 +76,26 @@ fun TopControlBar(
                     imageVector = Icons.Filled.BarChart,
                     contentDescription = stringResource(R.string.cd_toggle_histogram),
                     tint = if (isHistogramVisible) Color(0xFFFFC107) else Color.White,
+                    modifier = Modifier.size(28.dp)
+                )
+            }
+            
+            // Grid toggle
+            IconButton(onClick = onGridToggle) {
+                Icon(
+                    imageVector = when (gridMode) {
+                        0 -> Icons.Filled.GridOff
+                        1 -> Icons.Filled.Grid3x3
+                        2 -> Icons.Filled.Grid4x4
+                        else -> Icons.Filled.GridOff
+                    },
+                    contentDescription = when (gridMode) {
+                        0 -> "Grid Off"
+                        1 -> "Rule of Thirds"
+                        2 -> "Golden Ratio"
+                        else -> "Grid Off"
+                    },
+                    tint = if (gridMode > 0) Color(0xFFFFC107) else Color.White,
                     modifier = Modifier.size(28.dp)
                 )
             }

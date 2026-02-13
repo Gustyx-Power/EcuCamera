@@ -9,6 +9,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
@@ -25,6 +26,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.viewinterop.AndroidView
 import id.xms.ecucamera.ui.components.AutoFitSurfaceView
+import id.xms.ecucamera.ui.components.hud.GridOverlay
 import kotlin.math.abs
 import kotlin.math.max
 
@@ -70,6 +72,7 @@ import kotlin.math.max
 fun ViewfinderScreen(
     aspectRatio: Float = 4f / 3f,
     targetCropRatio: Float = 4f / 3f,
+    gridMode: Int = 0,
     onSurfaceReady: (Surface) -> Unit,
     onSurfaceDestroyed: () -> Unit,
     onSurfaceChanged: (Surface) -> Unit = {},
@@ -209,6 +212,7 @@ fun ViewfinderScreen(
         // ── SurfaceView with scale animation ──
         AndroidView(
             modifier = Modifier
+                .aspectRatio(3f / 4f) // Force 4:3 portrait aspect ratio
                 .graphicsLayer {
                     scaleX = animatedScale
                     scaleY = animatedScale
@@ -250,6 +254,20 @@ fun ViewfinderScreen(
                 }
             }
         )
+        
+        // ── Grid Overlay (Composition Guides) ──
+        // CRITICAL: Uses aspectRatio(3f/4f) to match the 4:3 preview exactly
+        if (gridMode != 0) {
+            GridOverlay(
+                modifier = Modifier
+                    .aspectRatio(3f / 4f) // Force 4:3 portrait aspect ratio (matches preview)
+                    .graphicsLayer {
+                        scaleX = animatedScale
+                        scaleY = animatedScale
+                    },
+                gridMode = gridMode
+            )
+        }
 
         // ── 1:1 Black Mask Overlays ──
         if (isPortrait && animatedMaskH > 1f) {
