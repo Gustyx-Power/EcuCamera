@@ -16,10 +16,12 @@ import id.xms.ecucamera.engine.controller.ZoomController
 import id.xms.ecucamera.engine.controller.FlashController
 import id.xms.ecucamera.engine.pipeline.SessionManager
 import id.xms.ecucamera.engine.pipeline.RequestManager
+import id.xms.ecucamera.ui.model.CameraMode
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.io.File
 import kotlin.math.abs
 
 class CameraEngine(private val context: Context) {
@@ -73,6 +75,13 @@ class CameraEngine(private val context: Context) {
     )
     
     private val imageCaptureManager = ImageCaptureManager(context)
+    private val videoCaptureManager = VideoCaptureManager(context)
+    
+    // Current camera mode (PHOTO or VIDEO)
+    private var currentMode: CameraMode = CameraMode.PHOTO
+    
+    // Current zoom level
+    private var currentZoom: Float = 1.0f
     
     /**
      * Set a callback to be invoked when an image is successfully saved.
@@ -88,6 +97,7 @@ class CameraEngine(private val context: Context) {
     private var previewJob: Job? = null
     
     private var currentViewFinderSurface: Surface? = null
+    private var currentRecorderSurface: Surface? = null
     
     private val backgroundThread = HandlerThread("CameraEngineThread").apply { start() }
     private val backgroundHandler = Handler(backgroundThread.looper)
@@ -353,6 +363,116 @@ class CameraEngine(private val context: Context) {
     }
     
     /**
+     * Switch between PHOTO and VIDEO modes
+     * This requires recreating the camera session with different surfaces
+     */
+    suspend fun switchMode(mode: CameraMode) {
+        if (mode == currentMode) {
+            Log.d(TAG, "Already in $mode mode")
+            return
+        }
+        
+        Log.d(TAG, "Switching mode: $currentMode -> $mode")
+        
+        val oldMode = currentMode
+        currentMode = mode
+        
+        // Reset zoom to 1.0x when switching modes
+        Log.d(TAG, "Resetting zoom to 1.0x for mode switch")
+        zoomController.setZoom(1.0f)
+        currentZoom = 1.0f
+        
+        // If we're switching from VIDEO mode while recording, stop recording
+        if (oldMode == CameraMode.VIDEO && videoCaptureManager.isRecording) {
+            Log.w(TAG, "Stopping active recording before mode switch")
+            videoCaptureManager.stopRecording()
+        }
+        
+        // Close current camera session
+        val viewFinder = currentViewFinderSurface
+        if (viewFinder != null && isReady()) {
+            Log.d(TAG, "Recreating camera session for $mode mode")
+            
+            // Restart preview with new mode
+            startPreview(viewFinder, null, null)
+        } else {
+            Log.d(TAG, "Mode switched to $mode (will apply on next camera start)")
+        }
+    }
+    
+    /**
+     * Start video recording (only works in VIDEO mode)
+     */
+    fun startRecording() {
+        if (currentMode != CameraMode.VIDEO) {
+            Log.e(TAG, "Cannot start recording: not in VIDEO mode (current: $currentMode)")
+            return
+        }
+        
+        if (videoCaptureManager.isRecording) {
+            Log.w(TAG, "Already recording")
+            return
+        }
+        
+        Log.d(TAG, "Starting video recording")
+        videoCaptureManager.startRecording()
+    }
+    
+    /**
+     * Stop video recording
+     */
+    fun stopRecording(): File? {
+        if (!videoCaptureManager.isRecording) {
+            Log.w(TAG, "Not currently recording")
+            return null
+        }
+        
+        Log.d(TAG, "Stopping video recording and restarting preview")
+        
+        try {
+            // 1. Stop sending frames to the recorder
+            captureSession?.stopRepeating()
+            captureSession?.abortCaptures()
+            
+            // 2. Invalidate recorder surface before stopping
+            currentRecorderSurface = null
+            
+            // 3. Finalize the video file
+            val videoFile = videoCaptureManager.stopRecording()
+            
+            // 4. CRITICAL FIX: Restart preview to rebuild session with fresh MediaRecorder
+            // This prevents the preview freeze by creating a new valid surface
+            val viewFinder = currentViewFinderSurface
+            if (viewFinder != null && currentMode == CameraMode.VIDEO) {
+                Log.d(TAG, "Restarting preview session after video stop")
+                engineScope.launch {
+                    // Small delay to ensure MediaRecorder cleanup is complete
+                    kotlinx.coroutines.delay(100)
+                    startPreview(viewFinder, null, null)
+                }
+            } else {
+                Log.w(TAG, "Cannot restart preview: viewFinder=$viewFinder, mode=$currentMode")
+            }
+            
+            return videoFile
+            
+        } catch (e: Exception) {
+            Log.e(TAG, "Error stopping recording", e)
+            return null
+        }
+    }
+    
+    /**
+     * Check if currently recording video
+     */
+    fun isRecording(): Boolean = videoCaptureManager.isRecording
+    
+    /**
+     * Get current camera mode
+     */
+    fun getCurrentMode(): CameraMode = currentMode
+    
+    /**
      * Switch between front and back cameras.
      * Automatically determines the target camera ID based on current lens facing.
      * Handles flash safety: disables flash if front camera doesn't support it.
@@ -585,7 +705,34 @@ class CameraEngine(private val context: Context) {
                     sensorOrientation = { sensorOrientation }
                 )
                 
-                val targets = listOf(viewFinderSurface, this@CameraEngine.imageReader!!.surface, this@CameraEngine.jpegReader!!.surface)
+                // Prepare surfaces based on camera mode
+                val targets = mutableListOf<Surface>()
+                targets.add(viewFinderSurface)
+                targets.add(this@CameraEngine.imageReader!!.surface)
+                
+                // Add mode-specific surfaces
+                var recorderSurface: Surface? = null
+                currentRecorderSurface = null // Reset before setup
+                if (currentMode == CameraMode.VIDEO) {
+                    try {
+                        // Setup MediaRecorder and get its surface
+                        recorderSurface = videoCaptureManager.setupMediaRecorder(
+                            characteristics,
+                            deviceRotation,
+                            lensFacing
+                        )
+                        targets.add(recorderSurface)
+                        currentRecorderSurface = recorderSurface // Persist for zoom/controls
+                        Log.d(TAG, "Added MediaRecorder surface for VIDEO mode")
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Failed to setup MediaRecorder, falling back to PHOTO mode", e)
+                        currentMode = CameraMode.PHOTO
+                    }
+                } else {
+                    // PHOTO mode: add JPEG reader
+                    targets.add(this@CameraEngine.jpegReader!!.surface)
+                    Log.d(TAG, "Added JPEG surface for PHOTO mode")
+                }
                 
                 device.createCaptureSession(
                     targets,
@@ -594,16 +741,36 @@ class CameraEngine(private val context: Context) {
                             captureSession = session
                             
                             try {
-                                val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+                                // Use appropriate template based on mode
+                                val template = if (currentMode == CameraMode.VIDEO) {
+                                    CameraDevice.TEMPLATE_RECORD
+                                } else {
+                                    CameraDevice.TEMPLATE_PREVIEW
+                                }
+                                
+                                val builder = device.createCaptureRequest(template)
                                 builder.addTarget(viewFinderSurface)
                                 builder.addTarget(this@CameraEngine.imageReader!!.surface)
+                                
+                                // Add recorder surface if in VIDEO mode
+                                if (currentMode == CameraMode.VIDEO && recorderSurface != null) {
+                                    builder.addTarget(recorderSurface)
+                                    // Enable video stabilization to prevent jitter during zoom
+                                    builder.set(
+                                        CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
+                                        CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_ON
+                                    )
+                                    Log.d(TAG, "Using TEMPLATE_RECORD for VIDEO mode (stabilization ON)")
+                                } else {
+                                    Log.d(TAG, "Using TEMPLATE_PREVIEW for PHOTO mode")
+                                }
                                 
                                 cameraControls.applyToPreviewBuilder(builder)
                                 
                                 session.setRepeatingRequest(builder.build(), null, backgroundHandler)
                                 
                                 updateState(CameraState.Configured)
-                                Log.d(TAG, "Preview running — 4:3 locked, virtual crop active ✓")
+                                Log.d(TAG, "Preview running in $currentMode mode — 4:3 locked, virtual crop active ✓")
                                 
                             } catch (e: IllegalStateException) {
                                 Log.w(TAG, "Session closed during preview start")
@@ -692,8 +859,55 @@ class CameraEngine(private val context: Context) {
                     zoomLevel
                 }
                 
-                cameraControls.setZoom(clampedZoom)
-                updateRepeatingRequest()
+                // Update zoom in controller and get crop region
+                val cropRegion = zoomController.setZoom(clampedZoom)
+                currentZoom = clampedZoom
+                
+                // Apply zoom immediately to the active session
+                val device = cameraDevice
+                val session = captureSession
+                val reader = imageReader
+                val viewFinder = currentViewFinderSurface
+                val isCurrentlyRecording = videoCaptureManager.isRecording && currentMode == CameraMode.VIDEO
+                val recSurface = currentRecorderSurface
+                
+                if (device != null && session != null && reader != null && viewFinder != null) {
+                    // Determine which template to use based on recording state
+                    val template = if (isCurrentlyRecording) {
+                        CameraDevice.TEMPLATE_RECORD
+                    } else {
+                        CameraDevice.TEMPLATE_PREVIEW
+                    }
+                    
+                    val builder = device.createCaptureRequest(template)
+                    builder.addTarget(viewFinder)
+                    builder.addTarget(reader.surface)
+                    
+                    // CRITICAL: Add recorder surface when recording so video doesn't freeze
+                    if (isCurrentlyRecording && recSurface != null) {
+                        builder.addTarget(recSurface)
+                        // Maintain video stabilization during zoom
+                        builder.set(
+                            CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
+                            CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_ON
+                        )
+                        Log.d(TAG, "Zoom: recorder surface attached ✓")
+                    }
+                    
+                    // Apply zoom crop region
+                    builder.set(CaptureRequest.SCALER_CROP_REGION, cropRegion)
+                    
+                    // Apply other camera controls
+                    cameraControls.applyToPreviewBuilder(builder)
+                    
+                    // Update the repeating request immediately
+                    session.setRepeatingRequest(builder.build(), null, backgroundHandler)
+                    
+                    Log.d(TAG, "Zoom updated to ${clampedZoom}x (recording: ${videoCaptureManager.isRecording})")
+                } else {
+                    Log.w(TAG, "Cannot apply zoom: camera not ready")
+                }
+                
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to set zoom", e)
             }
@@ -865,10 +1079,27 @@ class CameraEngine(private val context: Context) {
             val session = captureSession ?: return
             val reader = imageReader ?: return
             val viewFinder = currentViewFinderSurface ?: return
+            val isCurrentlyRecording = videoCaptureManager.isRecording && currentMode == CameraMode.VIDEO
+            val recSurface = currentRecorderSurface
             
-            val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+            val template = if (isCurrentlyRecording) {
+                CameraDevice.TEMPLATE_RECORD
+            } else {
+                CameraDevice.TEMPLATE_PREVIEW
+            }
+            
+            val builder = device.createCaptureRequest(template)
             builder.addTarget(viewFinder)
             builder.addTarget(reader.surface)
+            
+            // Include recorder surface when recording
+            if (isCurrentlyRecording && recSurface != null) {
+                builder.addTarget(recSurface)
+                builder.set(
+                    CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
+                    CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_ON
+                )
+            }
             
             cameraControls.applyToPreviewBuilder(builder)
             exposureController.applyExposureCompensation(builder, compensation)
@@ -910,8 +1141,14 @@ class CameraEngine(private val context: Context) {
             val session = captureSession ?: return
             val reader = imageReader ?: return
             val viewFinder = currentViewFinderSurface ?: return
+            val isCurrentlyRecording = videoCaptureManager.isRecording && currentMode == CameraMode.VIDEO
+            val recSurface = currentRecorderSurface
             
-            cameraControls.updateRepeatingRequest(device, session, viewFinder, reader.surface, backgroundHandler)
+            cameraControls.updateRepeatingRequest(
+                device, session, viewFinder, reader.surface, backgroundHandler,
+                isRecording = isCurrentlyRecording,
+                recorderSurface = recSurface
+            )
         } catch (e: Exception) {
             Log.e(TAG, "Failed to update repeating request", e)
         }
@@ -948,6 +1185,10 @@ class CameraEngine(private val context: Context) {
         jpegReader = null
         cameraDevice?.close()
         cameraDevice = null
+        
+        // Cleanup video resources
+        currentRecorderSurface = null
+        videoCaptureManager.cleanup()
         
         orientationEventListener?.disable()
         orientationEventListener = null

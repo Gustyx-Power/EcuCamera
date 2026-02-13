@@ -1,10 +1,14 @@
 package id.xms.ecucamera.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.media.MediaActionSound
 import android.util.Log
 import android.view.Surface
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -63,12 +67,14 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
+import androidx.core.content.ContextCompat
 import id.xms.ecucamera.R
 import id.xms.ecucamera.data.SettingsManager
 import id.xms.ecucamera.engine.core.CameraState
 import id.xms.ecucamera.ui.components.BottomControlBar
 import id.xms.ecucamera.ui.components.TopControlBar
 import id.xms.ecucamera.ui.components.hud.HistogramGraph
+import id.xms.ecucamera.ui.components.hud.RecordingIndicator
 import id.xms.ecucamera.ui.components.hud.ShutterEffectOverlay
 import id.xms.ecucamera.ui.model.CamAspectRatio
 import id.xms.ecucamera.ui.model.CameraMode
@@ -105,6 +111,9 @@ fun CameraScreen(
     onExposureAdjust: (Float) -> Unit = {},
     onCloseApp: () -> Unit = {},
     onPhotoTaken: () -> Unit = {},
+    onRecordStart: () -> Unit = {},
+    onRecordStop: () -> Unit = {},
+    onModeSwitch: (CameraMode) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -115,6 +124,54 @@ fun CameraScreen(
     
     var currentZoom by remember { mutableFloatStateOf(1.0f) }
     var selectedMode by remember { mutableStateOf(CameraMode.PHOTO) }
+    var isRecording by remember { mutableStateOf(false) }
+    
+    // Audio permission state for video recording
+    var hasAudioPermission by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.RECORD_AUDIO
+            ) == PackageManager.PERMISSION_GRANTED
+        )
+    }
+    
+    // Audio permission launcher
+    val audioPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        hasAudioPermission = isGranted
+        if (!isGranted) {
+            // If audio permission denied, switch back to PHOTO mode
+            selectedMode = CameraMode.PHOTO
+            Log.d("CameraScreen", "Audio permission denied, switching back to PHOTO mode")
+        } else {
+            Log.d("CameraScreen", "Audio permission granted")
+        }
+    }
+    
+    // Handle mode changes with audio permission check
+    fun handleModeChange(newMode: CameraMode) {
+        // Reset zoom to 1.0x when switching modes
+        currentZoom = 1.0f
+        onZoomChange(1.0f)
+        
+        if (newMode == CameraMode.VIDEO) {
+            // Check if we have audio permission
+            if (!hasAudioPermission) {
+                // Request audio permission
+                audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+            } else {
+                // Permission already granted, switch to video mode
+                selectedMode = newMode
+                onModeSwitch(newMode)
+            }
+        } else {
+            // For non-video modes, just switch
+            selectedMode = newMode
+            onModeSwitch(newMode)
+        }
+    }
     
     // Collect settings from DataStore
     val flashMode by settingsManager.flashModeFlow.collectAsState(initial = 0)
@@ -314,6 +371,16 @@ fun CameraScreen(
                 )
             }
             
+            // Recording Indicator - Shows when recording video
+            RecordingIndicator(
+                isRecording = isRecording,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .windowInsetsPadding(WindowInsets.displayCutout)
+                    .windowInsetsPadding(WindowInsets.statusBars)
+                    .padding(top = 112.dp)  // Below orientation indicator
+            )
+            
             // Histogram positioned below TopControlBar with cutout padding
             AnimatedVisibility(
                 visible = showHistogram,
@@ -346,8 +413,8 @@ fun CameraScreen(
                     },
                     selectedMode = selectedMode,
                     onModeChange = { mode ->
+                        handleModeChange(mode)
                         val wasProMode = selectedMode == CameraMode.PRO
-                        selectedMode = mode
                         val isNowProMode = mode == CameraMode.PRO
                         
                         if (wasProMode != isNowProMode) {
@@ -360,17 +427,31 @@ fun CameraScreen(
                         GalleryManager.openGallery(context, latestImageUri)
                     },
                     onShutterClick = {
-                        // 1. Play shutter sound immediately
-                        mediaActionSound.play(MediaActionSound.SHUTTER_CLICK)
-                        
-                        // 2. Trigger visual feedback (black flash)
-                        triggerShutterAnim = true
-                        
-                        // 3. Take the picture
-                        onShutterClick()
-                        
-                        // Note: UI will update automatically via savedImageUri state change
-                        // No need to manually reload thumbnail here
+                        if (selectedMode == CameraMode.VIDEO) {
+                            // Video mode: toggle recording
+                            if (isRecording) {
+                                // Stop recording
+                                isRecording = false
+                                onRecordStop()
+                            } else {
+                                // Start recording
+                                isRecording = true
+                                onRecordStart()
+                            }
+                        } else {
+                            // Photo mode: take picture
+                            // 1. Play shutter sound immediately
+                            mediaActionSound.play(MediaActionSound.SHUTTER_CLICK)
+                            
+                            // 2. Trigger visual feedback (black flash)
+                            triggerShutterAnim = true
+                            
+                            // 3. Take the picture
+                            onShutterClick()
+                            
+                            // Note: UI will update automatically via savedImageUri state change
+                            // No need to manually reload thumbnail here
+                        }
                     },
                     onSwitchCamera = onSwitchCamera,
                     activeManualTarget = activeManualTarget,
@@ -381,6 +462,7 @@ fun CameraScreen(
                     shutterDisplayValue = "1/${(1 + shutterValue * 999).toInt()}",
                     focusDisplayValue = "${String.format("%.1f", focusValue * 10)}m",
                     galleryThumbnail = latestThumbnail,
+                    isRecording = isRecording,
                     modifier = Modifier.align(Alignment.BottomCenter)
                 )
             }

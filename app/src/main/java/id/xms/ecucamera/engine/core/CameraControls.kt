@@ -112,12 +112,29 @@ class CameraControls(
         session: CameraCaptureSession,
         viewFinder: Surface,
         readerSurface: Surface,
-        backgroundHandler: Handler
+        backgroundHandler: Handler,
+        isRecording: Boolean = false,
+        recorderSurface: Surface? = null
     ) {
         try {
-            val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+            val template = if (isRecording) {
+                CameraDevice.TEMPLATE_RECORD
+            } else {
+                CameraDevice.TEMPLATE_PREVIEW
+            }
+            
+            val builder = device.createCaptureRequest(template)
             builder.addTarget(viewFinder)
             builder.addTarget(readerSurface)
+            
+            // Include recorder surface when recording to prevent video freeze
+            if (isRecording && recorderSurface != null) {
+                builder.addTarget(recorderSurface)
+                builder.set(
+                    CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
+                    CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_ON
+                )
+            }
             
             applyToPreviewBuilder(builder)
             
