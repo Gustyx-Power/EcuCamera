@@ -9,6 +9,7 @@ import android.view.Surface
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import android.app.Activity
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -81,6 +82,7 @@ import id.xms.ecucamera.ui.model.CameraMode
 import id.xms.ecucamera.ui.model.ManualTarget
 import id.xms.ecucamera.ui.screens.viewfinder.ViewfinderScreen
 import id.xms.ecucamera.utils.GalleryManager
+import id.xms.ecucamera.utils.WindowUtils
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -117,6 +119,7 @@ fun CameraScreen(
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
+    val activity = context as? Activity
     val coroutineScope = rememberCoroutineScope()
     
     // Initialize SettingsManager
@@ -125,6 +128,14 @@ fun CameraScreen(
     var currentZoom by remember { mutableFloatStateOf(1.0f) }
     var selectedMode by remember { mutableStateOf(CameraMode.PHOTO) }
     var isRecording by remember { mutableStateOf(false) }
+    
+    // Screen Flash state for front camera
+    var showScreenFlash by remember { mutableStateOf(false) }
+    val screenFlashAlpha by animateFloatAsState(
+        targetValue = if (showScreenFlash) 1f else 0f,
+        animationSpec = tween(durationMillis = 100),
+        label = "screen_flash_alpha"
+    )
     
     // Audio permission state for video recording
     var hasAudioPermission by remember {
@@ -294,6 +305,16 @@ fun CameraScreen(
             )
         }
         
+        // LAYER 2.5: Screen Flash Overlay (White flash for front camera)
+        if (showScreenFlash) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.White.copy(alpha = screenFlashAlpha))
+                    .zIndex(5f)
+            )
+        }
+        
         // NOTE: Grid Overlay is now inside ViewfinderScreen for perfect alignment.
         // NOTE: The old "Aspect Ratio Switching Overlay" (LAYER 3.5) is REMOVED.
         // Virtual crop is instant — no blocking overlay needed.
@@ -440,14 +461,60 @@ fun CameraScreen(
                             }
                         } else {
                             // Photo mode: take picture
-                            // 1. Play shutter sound immediately
-                            mediaActionSound.play(MediaActionSound.SHUTTER_CLICK)
                             
-                            // 2. Trigger visual feedback (black flash)
-                            triggerShutterAnim = true
+                            // Check if we need Screen Flash (Front Camera + Flash ON)
+                            val needsScreenFlash = lensFacing == android.hardware.camera2.CameraCharacteristics.LENS_FACING_FRONT && 
+                                                   flashMode == 1
                             
-                            // 3. Take the picture
-                            onShutterClick()
+                            if (needsScreenFlash && activity != null) {
+                                // Screen Flash Sequence for Front Camera
+                                coroutineScope.launch {
+                                    try {
+                                        // 1. Show white overlay
+                                        showScreenFlash = true
+                                        
+                                        // 2. Maximize screen brightness
+                                        WindowUtils.maximizeBrightness(activity)
+                                        
+                                        // 3. Wait for light to illuminate face
+                                        delay(150)
+                                        
+                                        // 4. Play shutter sound
+                                        mediaActionSound.play(MediaActionSound.SHUTTER_CLICK)
+                                        
+                                        // 5. Trigger visual feedback (black flash)
+                                        triggerShutterAnim = true
+                                        
+                                        // 6. Take the picture
+                                        onShutterClick()
+                                        
+                                        // 7. Brief delay to ensure capture completes
+                                        delay(100)
+                                        
+                                        // 8. Hide white overlay
+                                        showScreenFlash = false
+                                        
+                                        // 9. Restore screen brightness
+                                        WindowUtils.restoreBrightness(activity)
+                                        
+                                    } catch (e: Exception) {
+                                        Log.e("CameraScreen", "Screen flash error", e)
+                                        // Cleanup on error
+                                        showScreenFlash = false
+                                        activity?.let { WindowUtils.restoreBrightness(it) }
+                                    }
+                                }
+                            } else {
+                                // Normal capture (Back Camera or Flash OFF)
+                                // 1. Play shutter sound immediately
+                                mediaActionSound.play(MediaActionSound.SHUTTER_CLICK)
+                                
+                                // 2. Trigger visual feedback (black flash)
+                                triggerShutterAnim = true
+                                
+                                // 3. Take the picture
+                                onShutterClick()
+                            }
                             
                             // Note: UI will update automatically via savedImageUri state change
                             // No need to manually reload thumbnail here

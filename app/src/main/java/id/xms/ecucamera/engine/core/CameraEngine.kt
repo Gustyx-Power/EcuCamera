@@ -83,6 +83,9 @@ class CameraEngine(private val context: Context) {
     // Current zoom level
     private var currentZoom: Float = 1.0f
     
+    // Current exposure compensation (EV adjustment)
+    private var currentExposureCompensation: Int = 0
+    
     /**
      * Set a callback to be invoked when an image is successfully saved.
      * @param callback Function that receives the saved image URI (or null on failure)
@@ -812,7 +815,20 @@ class CameraEngine(private val context: Context) {
                 val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE)
                 builder.addTarget(jpegReader.surface)
                 
+                // CRITICAL: Apply all camera controls (zoom, focus, flash, etc.)
                 cameraControls.applyToCaptureBuilder(builder)
+                
+                // CRITICAL FIX: Sync Exposure Compensation from preview to capture
+                // This ensures the EV adjustment visible in preview is applied to the final image
+                builder.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, currentExposureCompensation)
+                Log.d(TAG, "Applied exposure compensation to capture: $currentExposureCompensation")
+                
+                // CRITICAL FIX: Sync Zoom crop region to ensure capture matches preview framing
+                if (zoomController.isZoomSupported()) {
+                    val cropRegion = zoomController.calculateZoomRect(currentZoom)
+                    builder.set(CaptureRequest.SCALER_CROP_REGION, cropRegion)
+                    Log.d(TAG, "Applied zoom crop region to capture: ${currentZoom}x")
+                }
                 
                 val jpegOrientation = getJpegOrientation()
                 builder.set(CaptureRequest.JPEG_ORIENTATION, jpegOrientation)
@@ -1066,6 +1082,10 @@ class CameraEngine(private val context: Context) {
         engineScope.launch {
             try {
                 val compensation = exposureController.calculateExposureCompensation(sliderValue)
+                // Store the compensation value for use in takePicture()
+                currentExposureCompensation = compensation
+                // Also update CameraControls for consistency
+                cameraControls.setExposureCompensation(compensation)
                 updateRepeatingRequestWithExposure(compensation)
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to set exposure compensation", e)

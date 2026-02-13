@@ -29,6 +29,9 @@ class CameraControls(
     private var isManualFocusMode = false
     private var currentFocusDistance = 0.0f
     
+    // Track exposure compensation (EV adjustment) for auto mode
+    private var currentExposureCompensation = 0
+    
     fun setZoom(zoomLevel: Float) {
         zoomController.setZoom(zoomLevel)
     }
@@ -63,6 +66,13 @@ class CameraControls(
         currentExpTime = exposureController.calculateExposureTime(sliderValue)
     }
     
+    fun setExposureCompensation(compensation: Int) {
+        currentExposureCompensation = compensation
+        Log.d(TAG, "Exposure compensation set to: $compensation")
+    }
+    
+    fun getExposureCompensation(): Int = currentExposureCompensation
+    
     fun applyToPreviewBuilder(builder: CaptureRequest.Builder) {
         if (zoomController.isZoomSupported()) {
             val zoomRect = zoomController.calculateZoomRect(zoomController.getZoomLevel())
@@ -70,6 +80,11 @@ class CameraControls(
         }
         
         exposureController.applyToBuilder(builder, isManualMode, currentIso, currentExpTime)
+        
+        // Apply exposure compensation in auto mode
+        if (!isManualMode) {
+            exposureController.applyExposureCompensation(builder, currentExposureCompensation)
+        }
         
         if (isManualFocusMode) {
             focusController.applyManualFocus(builder, currentFocusDistance)
@@ -92,6 +107,11 @@ class CameraControls(
         }
         
         exposureController.applyToBuilder(builder, isManualMode, currentIso, currentExpTime)
+        
+        // Apply exposure compensation in auto mode
+        if (!isManualMode) {
+            exposureController.applyExposureCompensation(builder, currentExposureCompensation)
+        }
         
         if (isManualFocusMode) {
             focusController.applyManualFocus(builder, currentFocusDistance)
