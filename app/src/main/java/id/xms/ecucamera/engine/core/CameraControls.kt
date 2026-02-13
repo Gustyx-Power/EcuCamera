@@ -78,6 +78,10 @@ class CameraControls(
         }
         
         flashController.applyToBuilder(builder, isManualMode)
+        
+        // Set auto white balance for natural colors
+        builder.set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
+        
         builder.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
     }
     
@@ -96,6 +100,10 @@ class CameraControls(
         }
         
         flashController.applyToCaptureBuilder(builder, isManualMode)
+        
+        // Set auto white balance for natural colors
+        builder.set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
+        
         builder.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
     }
     

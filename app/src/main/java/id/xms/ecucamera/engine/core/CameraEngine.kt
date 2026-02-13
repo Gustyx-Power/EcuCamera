@@ -477,6 +477,7 @@ class CameraEngine(private val context: Context) {
                 
                 imageCaptureManager.setupJpegListener(
                     this@CameraEngine.jpegReader!!,
+                    backgroundHandler,
                     targetCropRatio = { _targetCropRatio.value },
                     deviceOrientationDegrees = { currentDeviceOrientationDegrees },
                     sensorOrientation = { sensorOrientation }

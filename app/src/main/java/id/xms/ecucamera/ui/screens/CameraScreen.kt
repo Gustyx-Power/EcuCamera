@@ -40,7 +40,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.movableContentOf
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -61,6 +63,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import id.xms.ecucamera.R
+import id.xms.ecucamera.data.SettingsManager
 import id.xms.ecucamera.engine.core.CameraState
 import id.xms.ecucamera.ui.components.BottomControlBar
 import id.xms.ecucamera.ui.components.TopControlBar
@@ -86,7 +89,7 @@ fun CameraScreen(
     onSurfaceChanged: (Surface) -> Unit = {},
     onTouchEvent: (android.view.MotionEvent) -> Boolean,
     onZoomChange: (Float) -> Unit,
-    onFlashToggle: () -> Unit,
+    onFlashModeChange: (Int) -> Unit,
     onShutterClick: () -> Unit,
     onSwitchCamera: () -> Unit,
     onAspectRatioChange: (CamAspectRatio) -> Unit = {},
@@ -100,9 +103,18 @@ fun CameraScreen(
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
+    
+    // Initialize SettingsManager
+    val settingsManager = remember { SettingsManager(context) }
+    
     var currentZoom by remember { mutableFloatStateOf(1.0f) }
-    var flashMode by remember { mutableIntStateOf(0) }
     var selectedMode by remember { mutableStateOf(CameraMode.PHOTO) }
+    
+    // Collect settings from DataStore
+    val flashMode by settingsManager.flashModeFlow.collectAsState(initial = 0)
+    val aspectRatioIndex by settingsManager.aspectRatioIndexFlow.collectAsState(initial = 1)
+    val showHistogram by settingsManager.showHistogramFlow.collectAsState(initial = false)
+    val gridMode by settingsManager.gridModeFlow.collectAsState(initial = 0)
     
     var isoValue by remember { mutableFloatStateOf(0.5f) }
     var shutterValue by remember { mutableFloatStateOf(0.5f) }
@@ -119,11 +131,10 @@ fun CameraScreen(
     // Gallery viewer state
     var showGallery by remember { mutableStateOf(false) }
     
-    // Aspect ratio state — NO switching protection needed anymore (instant!)
-    var currentRatio by remember { mutableStateOf(CamAspectRatio.RATIO_4_3) }
-    
-    // Histogram visibility state
-    var showHistogram by remember { mutableStateOf(true) }
+    // Derive current ratio from persisted index
+    val currentRatio = remember(aspectRatioIndex) {
+        CamAspectRatio.values()[aspectRatioIndex.coerceIn(0, CamAspectRatio.values().size - 1)]
+    }
     
     // Audio feedback setup
     val mediaActionSound = remember { MediaActionSound() }
@@ -132,6 +143,29 @@ fun CameraScreen(
     LaunchedEffect(Unit) {
         mediaActionSound.load(MediaActionSound.SHUTTER_CLICK)
         latestThumbnail = GalleryManager.getLastImageThumbnail(context)
+    }
+    
+    // Notify parent when aspect ratio changes from persisted state
+    LaunchedEffect(currentRatio) {
+        onAspectRatioChange(currentRatio)
+    }
+    
+    // Apply saved flash mode when camera becomes ready
+    var hasAppliedFlash by remember { mutableStateOf(false) }
+    LaunchedEffect(cameraState, flashMode) {
+        if ((cameraState is CameraState.Configured || cameraState is CameraState.Open) && !hasAppliedFlash) {
+            // Small delay to ensure capture session is fully ready
+            delay(150)
+            // Apply the saved flash mode to the camera engine
+            onFlashModeChange(flashMode)
+            hasAppliedFlash = true
+            android.util.Log.d("CameraScreen", "Applied saved flash mode: $flashMode")
+        }
+        
+        // Reset flag when camera closes so it reapplies on next open
+        if (cameraState is CameraState.Closed) {
+            hasAppliedFlash = false
+        }
     }
     
     // Cleanup audio resources
@@ -160,10 +194,12 @@ fun CameraScreen(
     }
     
     Box(modifier = modifier.fillMaxSize()) {
-        // LAYER 1 (Bottom): Camera Preview with Virtual Crop — NEVER restarts
+        // LAYER 1 (Bottom): Camera Preview with Virtual Crop
+        // Grid overlay is now integrated inside ViewfinderScreen
         ViewfinderScreen(
             aspectRatio = previewAspectRatio,
             targetCropRatio = targetCropRatio,
+            gridMode = gridMode,
             onSurfaceReady = onSurfaceReady,
             onSurfaceDestroyed = onSurfaceDestroyed,
             onSurfaceChanged = onSurfaceChanged,
@@ -178,38 +214,11 @@ fun CameraScreen(
             )
         }
         
-        // LAYER 3: Grid Overlay
-        if (!showGallery) {
-            Canvas(modifier = Modifier.fillMaxSize()) {
-                val width = size.width
-                val height = size.height
-                
-                for (i in 1..2) {
-                    val x = width * i / 3
-                    drawLine(
-                        color = Color.White.copy(alpha = 0.3f),
-                        start = Offset(x, 0f),
-                        end = Offset(x, height),
-                        strokeWidth = 1f
-                    )
-                }
-                
-                for (i in 1..2) {
-                    val y = height * i / 3
-                    drawLine(
-                        color = Color.White.copy(alpha = 0.3f),
-                        start = Offset(0f, y),
-                        end = Offset(width, y),
-                        strokeWidth = 1f
-                    )
-                }
-            }
-        }
-        
+        // NOTE: Grid Overlay is now inside ViewfinderScreen for perfect alignment.
         // NOTE: The old "Aspect Ratio Switching Overlay" (LAYER 3.5) is REMOVED.
         // Virtual crop is instant — no blocking overlay needed.
         
-        // LAYER 4: Camera Controls (only visible when gallery is closed)
+        // LAYER 3: Camera Controls (only visible when gallery is closed)
         if (!showGallery) {
             // Top controls container with display cutout padding
             Box(
@@ -224,17 +233,33 @@ fun CameraScreen(
                     onRatioChanged = {
                         // Instant switch — no debounce needed!
                         val newRatio = currentRatio.next()
-                        currentRatio = newRatio
+                        val newIndex = newRatio.ordinal
+                        coroutineScope.launch {
+                            settingsManager.setAspectRatioIndex(newIndex)
+                        }
                         onAspectRatioChange(newRatio)
                     },
                     isHistogramVisible = showHistogram,
                     onToggleHistogram = {
-                        showHistogram = !showHistogram
+                        val newValue = !showHistogram
+                        coroutineScope.launch {
+                            settingsManager.setShowHistogram(newValue)
+                        }
                     },
                     flashMode = flashMode,
                     onFlashToggle = {
-                        flashMode = if (flashMode == 0) 1 else 0
-                        onFlashToggle()
+                        val newMode = if (flashMode == 0) 1 else 0
+                        coroutineScope.launch {
+                            settingsManager.setFlashMode(newMode)
+                        }
+                        onFlashModeChange(newMode)
+                    },
+                    gridMode = gridMode,
+                    onGridToggle = {
+                        val newMode = (gridMode + 1) % 3
+                        coroutineScope.launch {
+                            settingsManager.setGridMode(newMode)
+                        }
                     },
                     onSettingsClick = { },
                     modifier = Modifier.align(Alignment.TopCenter)
