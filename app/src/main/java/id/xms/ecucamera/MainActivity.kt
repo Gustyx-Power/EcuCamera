@@ -27,6 +27,7 @@ import id.xms.ecucamera.ui.screens.CameraScreen
 import id.xms.ecucamera.ui.theme.EcuCameraTheme
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import java.io.File
 
 class MainActivity : ComponentActivity() {
     companion object {
@@ -214,7 +215,26 @@ class MainActivity : ComponentActivity() {
                     onExposureAdjust = { level ->
                         cameraEngine.setExposureCompensation(level)
                     },
-                    onCloseApp = { finish() }
+                    onCloseApp = { finish() },
+                    onRecordStart = {
+                        Log.d(TAG, "Starting video recording")
+                        cameraEngine.startRecording()
+                    },
+                    onRecordStop = {
+                        Log.d(TAG, "Stopping video recording")
+                        val videoFile = cameraEngine.stopRecording()
+                        if (videoFile != null) {
+                            Log.d(TAG, "Video saved: ${videoFile.absolutePath}")
+                        } else {
+                            Log.e(TAG, "Failed to save video")
+                        }
+                    },
+                    onModeSwitch = { mode ->
+                        Log.d(TAG, "Switching to $mode mode")
+                        lifecycleScope.launch {
+                            cameraEngine.switchMode(mode)
+                        }
+                    }
                 )
             }
         }

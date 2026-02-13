@@ -61,6 +61,7 @@ fun BottomControlBar(
     shutterDisplayValue: String = "1/60",
     focusDisplayValue: String = "2.0m",
     galleryThumbnail: Bitmap? = null,
+    isRecording: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val scope = rememberCoroutineScope()
@@ -164,7 +165,11 @@ fun BottomControlBar(
                     onClick = onGalleryClick
                 )
                 
-                ShutterButton(onClick = onShutterClick)
+                ShutterButton(
+                    onClick = onShutterClick,
+                    cameraMode = selectedMode,
+                    isRecording = isRecording
+                )
                 
                 IconButton(
                     onClick = {
