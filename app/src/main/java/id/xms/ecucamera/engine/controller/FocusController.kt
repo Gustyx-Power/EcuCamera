@@ -12,6 +12,8 @@ class FocusController {
     
     private var minimumFocusDistance: Float = 0.0f
     private var isManualFocusSupported = false
+    private var availableAfModes: IntArray = intArrayOf()
+    private var supportsContinuousAf = false
     
     /**
      * Initialize focus capabilities from camera characteristics
@@ -24,12 +26,20 @@ class FocusController {
             // Check if manual focus is supported
             isManualFocusSupported = minimumFocusDistance > 0.0f
             
+            // Get available AF modes
+            availableAfModes = characteristics.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES) ?: intArrayOf()
+            
+            // Check if continuous auto focus is supported
+            supportsContinuousAf = availableAfModes.contains(CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+            
             Log.d(TAG, "Focus capabilities - Min distance: $minimumFocusDistance, Manual supported: $isManualFocusSupported")
+            Log.d(TAG, "Available AF modes: ${availableAfModes.joinToString()}, Continuous AF: $supportsContinuousAf")
             
         } catch (e: Exception) {
             Log.e(TAG, "Failed to initialize focus capabilities", e)
             isManualFocusSupported = false
             minimumFocusDistance = 0.0f
+            supportsContinuousAf = false
         }
     }
     
@@ -79,13 +89,23 @@ class FocusController {
     
     /**
      * Apply auto focus settings to capture request builder
+     * Uses CONTINUOUS_PICTURE mode for best preview experience (constantly adjusts focus)
+     * Falls back to AUTO mode if continuous AF is not supported
      */
     fun applyAutoFocus(builder: CaptureRequest.Builder) {
         try {
-            // Set AF mode to AUTO
-            builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
-            
-            Log.d(TAG, "Applied auto focus")
+            // Prefer continuous auto focus for smooth preview experience
+            if (supportsContinuousAf) {
+                builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+                Log.d(TAG, "Applied continuous auto focus (CONTINUOUS_PICTURE)")
+            } else if (availableAfModes.contains(CaptureRequest.CONTROL_AF_MODE_AUTO)) {
+                builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_AUTO)
+                Log.d(TAG, "Applied single-shot auto focus (AUTO) - continuous AF not supported")
+            } else {
+                // Fixed focus camera
+                builder.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
+                Log.d(TAG, "Fixed focus camera - AF disabled")
+            }
             
         } catch (e: Exception) {
             Log.e(TAG, "Failed to apply auto focus settings", e)
