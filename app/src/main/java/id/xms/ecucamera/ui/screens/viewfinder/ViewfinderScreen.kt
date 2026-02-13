@@ -79,6 +79,7 @@ fun ViewfinderScreen(
     aspectRatio: Float = 4f / 3f,
     targetCropRatio: Float = 4f / 3f,
     gridMode: Int = 0,
+    isFrontCamera: Boolean = false,
     onSurfaceReady: (Surface) -> Unit,
     onSurfaceDestroyed: () -> Unit,
     onSurfaceChanged: (Surface) -> Unit = {},
@@ -226,7 +227,7 @@ fun ViewfinderScreen(
             modifier = Modifier
                 .aspectRatio(3f / 4f)
                 .graphicsLayer {
-                    scaleX = animatedScale
+                    scaleX = animatedScale * if (isFrontCamera) -1f else 1f
                     scaleY = animatedScale
                 }
         ) {

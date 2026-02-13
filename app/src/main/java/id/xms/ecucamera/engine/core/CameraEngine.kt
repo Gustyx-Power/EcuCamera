@@ -54,6 +54,9 @@ class CameraEngine(private val context: Context) {
     private var currentCameraId: String? = null
     private var lastCameraId: String? = null
     
+    var lensFacing: Int = CameraCharacteristics.LENS_FACING_BACK
+        private set
+    
     private val sessionManager = SessionManager()
     private val requestManager = RequestManager()
     private val lensManager = LensManager()
@@ -291,6 +294,16 @@ class CameraEngine(private val context: Context) {
                 currentCameraId = cameraId
                 updateState(CameraState.Opening)
                 
+                // Update lens facing
+                try {
+                    val characteristics = cameraManager.getCameraCharacteristics(cameraId)
+                    lensFacing = characteristics.get(CameraCharacteristics.LENS_FACING) ?: CameraCharacteristics.LENS_FACING_BACK
+                    Log.d(TAG, "Camera $cameraId lens facing: ${if (lensFacing == CameraCharacteristics.LENS_FACING_FRONT) "FRONT" else "BACK"}")
+                } catch (e: Exception) {
+                    Log.e(TAG, "Failed to get lens facing, defaulting to BACK", e)
+                    lensFacing = CameraCharacteristics.LENS_FACING_BACK
+                }
+                
                 initializeOrientationListener()
                 
                 try {
@@ -331,6 +344,87 @@ class CameraEngine(private val context: Context) {
         }
     }
     
+    /**
+     * Switch between front and back cameras.
+     * Automatically determines the target camera ID based on current lens facing.
+     * Handles flash safety: disables flash if front camera doesn't support it.
+     */
+    suspend fun switchCamera(): Boolean {
+        return try {
+            val oldId = currentCameraId
+            if (oldId == null) {
+                Log.e(TAG, "Cannot switch camera: no current camera")
+                return false
+            }
+            
+            // Determine new lens facing (toggle)
+            val newLensFacing = if (lensFacing == CameraCharacteristics.LENS_FACING_BACK) {
+                CameraCharacteristics.LENS_FACING_FRONT
+            } else {
+                CameraCharacteristics.LENS_FACING_BACK
+            }
+            
+            // Find camera ID for new facing
+            val newId = findCameraIdForLensFacing(newLensFacing)
+            if (newId == null) {
+                Log.w(TAG, "No camera found for lens facing: ${if (newLensFacing == CameraCharacteristics.LENS_FACING_FRONT) "FRONT" else "BACK"}")
+                return false
+            }
+            
+            if (newId == oldId) {
+                Log.d(TAG, "Camera switch ignored - already using $newId")
+                return false
+            }
+            
+            Log.d(TAG, "Switching camera: $oldId (${if (lensFacing == CameraCharacteristics.LENS_FACING_FRONT) "FRONT" else "BACK"}) -> $newId (${if (newLensFacing == CameraCharacteristics.LENS_FACING_FRONT) "FRONT" else "BACK"})")
+            
+            // Close current camera
+            closeCamera()
+            while (_cameraState.value !is CameraState.Closed) {
+                delay(50)
+            }
+            
+            // Open new camera
+            openCamera(newId)
+            while (_cameraState.value !is CameraState.Open) {
+                delay(50)
+            }
+            
+            // Flash safety check for front camera
+            if (newLensFacing == CameraCharacteristics.LENS_FACING_FRONT) {
+                if (!flashController.isFlashSupported()) {
+                    Log.d(TAG, "Front camera has no flash unit - disabling flash")
+                    flashController.setFlashMode(0) // OFF
+                }
+            }
+            
+            Log.d(TAG, "Camera switch completed successfully")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to switch camera", e)
+            false
+        }
+    }
+    
+    /**
+     * Find camera ID for a specific lens facing.
+     */
+    private fun findCameraIdForLensFacing(targetLensFacing: Int): String? {
+        return try {
+            cameraManager.cameraIdList.firstOrNull { id ->
+                val characteristics = cameraManager.getCameraCharacteristics(id)
+                val facing = characteristics.get(CameraCharacteristics.LENS_FACING)
+                facing == targetLensFacing
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to find camera for lens facing", e)
+            null
+        }
+    }
+    
+    /**
+     * Legacy method for explicit camera ID switching (kept for compatibility).
+     */
     fun switchCamera(newId: String, viewFinderSurface: Surface? = null, onAnalysis: ((String) -> Unit)? = null, onFocusPeaking: ((String) -> Unit)? = null) {
         engineScope.launch {
             val oldId = currentCameraId
