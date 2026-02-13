@@ -76,7 +76,7 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.7.0")
     
     // Compose BOM
-    implementation(platform("androidx.compose:compose-bom:2026.01.01"))
+    implementation(platform("androidx.compose:compose-bom:2026.02.00"))
     
     // Compose
     implementation("androidx.compose.ui:ui")
