@@ -2,6 +2,7 @@ package id.xms.ecucamera.ui.screens
 
 import android.graphics.Bitmap
 import android.media.MediaActionSound
+import android.util.Log
 import android.view.Surface
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
@@ -85,6 +86,7 @@ fun CameraScreen(
     targetCropRatio: Float,
     deviceOrientation: Int,
     lensFacing: Int,
+    savedImageUri: android.net.Uri?,
     onSurfaceReady: (Surface) -> Unit,
     onSurfaceDestroyed: () -> Unit,
     onSurfaceChanged: (Surface) -> Unit = {},
@@ -128,6 +130,17 @@ fun CameraScreen(
     
     // Gallery thumbnail state
     var latestThumbnail by remember { mutableStateOf<Bitmap?>(null) }
+    var latestImageUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    
+    // Update latestImageUri when savedImageUri changes (instant update from camera engine)
+    LaunchedEffect(savedImageUri) {
+        if (savedImageUri != null) {
+            Log.d("CameraScreen", "Instant update: New image saved at $savedImageUri")
+            latestImageUri = savedImageUri
+            // Also reload thumbnail for the new image
+            latestThumbnail = GalleryManager.getLastImageThumbnail(context)
+        }
+    }
     
     // Shutter animation state
     var triggerShutterAnim by remember { mutableStateOf(false) }
@@ -147,6 +160,7 @@ fun CameraScreen(
     LaunchedEffect(Unit) {
         mediaActionSound.load(MediaActionSound.SHUTTER_CLICK)
         latestThumbnail = GalleryManager.getLastImageThumbnail(context)
+        latestImageUri = GalleryManager.getLastImageUri(context)
     }
     
     // Notify parent when aspect ratio changes from persisted state
@@ -195,6 +209,7 @@ fun CameraScreen(
         showGallery = false
         // Reload thumbnail when returning from gallery
         latestThumbnail = GalleryManager.getLastImageThumbnail(context)
+        latestImageUri = GalleryManager.getLastImageUri(context)
     }
     
     Box(modifier = modifier.fillMaxSize()) {
@@ -341,7 +356,8 @@ fun CameraScreen(
                         }
                     },
                     onGalleryClick = {
-                        showGallery = true
+                        // Open system gallery with the latest image
+                        GalleryManager.openGallery(context, latestImageUri)
                     },
                     onShutterClick = {
                         // 1. Play shutter sound immediately
@@ -353,11 +369,8 @@ fun CameraScreen(
                         // 3. Take the picture
                         onShutterClick()
                         
-                        // 4. Reload thumbnail after a short delay to allow image to be saved
-                        coroutineScope.launch {
-                            delay(500)
-                            latestThumbnail = GalleryManager.getLastImageThumbnail(context)
-                        }
+                        // Note: UI will update automatically via savedImageUri state change
+                        // No need to manually reload thumbnail here
                     },
                     onSwitchCamera = onSwitchCamera,
                     activeManualTarget = activeManualTarget,
@@ -459,6 +472,7 @@ fun CameraScreen(
                     showGallery = false
                     // Reload thumbnail when returning from gallery
                     latestThumbnail = GalleryManager.getLastImageThumbnail(context)
+                    latestImageUri = GalleryManager.getLastImageUri(context)
                 }
             )
         }

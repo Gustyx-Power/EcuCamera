@@ -74,6 +74,14 @@ class CameraEngine(private val context: Context) {
     
     private val imageCaptureManager = ImageCaptureManager(context)
     
+    /**
+     * Set a callback to be invoked when an image is successfully saved.
+     * @param callback Function that receives the saved image URI (or null on failure)
+     */
+    fun setOnImageSavedCallback(callback: (android.net.Uri?) -> Unit) {
+        imageCaptureManager.setOnImageSavedCallback(callback)
+    }
+    
     private var testImageReader: ImageReader? = null
     private var imageReader: ImageReader? = null
     private var jpegReader: ImageReader? = null
