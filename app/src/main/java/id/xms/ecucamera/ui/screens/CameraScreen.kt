@@ -5,6 +5,8 @@ import android.media.MediaActionSound
 import android.view.Surface
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
@@ -17,10 +19,20 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDropUp
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
@@ -37,6 +49,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -51,7 +64,9 @@ import id.xms.ecucamera.R
 import id.xms.ecucamera.engine.core.CameraState
 import id.xms.ecucamera.ui.components.BottomControlBar
 import id.xms.ecucamera.ui.components.TopControlBar
+import id.xms.ecucamera.ui.components.hud.HistogramGraph
 import id.xms.ecucamera.ui.components.hud.ShutterEffectOverlay
+import id.xms.ecucamera.ui.model.CamAspectRatio
 import id.xms.ecucamera.ui.model.CameraMode
 import id.xms.ecucamera.ui.model.ManualTarget
 import id.xms.ecucamera.ui.screens.viewfinder.ViewfinderScreen
@@ -63,13 +78,18 @@ import kotlinx.coroutines.launch
 fun CameraScreen(
     histogramData: String,
     cameraState: CameraState,
+    previewAspectRatio: Float,
+    targetCropRatio: Float,
+    deviceOrientation: Int,
     onSurfaceReady: (Surface) -> Unit,
     onSurfaceDestroyed: () -> Unit,
+    onSurfaceChanged: (Surface) -> Unit = {},
     onTouchEvent: (android.view.MotionEvent) -> Boolean,
     onZoomChange: (Float) -> Unit,
     onFlashToggle: () -> Unit,
     onShutterClick: () -> Unit,
     onSwitchCamera: () -> Unit,
+    onAspectRatioChange: (CamAspectRatio) -> Unit = {},
     onManualModeChange: (Boolean) -> Unit = {},
     onIsoChange: (Float) -> Unit = {},
     onShutterChange: (Float) -> Unit = {},
@@ -98,6 +118,12 @@ fun CameraScreen(
     
     // Gallery viewer state
     var showGallery by remember { mutableStateOf(false) }
+    
+    // Aspect ratio state — NO switching protection needed anymore (instant!)
+    var currentRatio by remember { mutableStateOf(CamAspectRatio.RATIO_4_3) }
+    
+    // Histogram visibility state
+    var showHistogram by remember { mutableStateOf(true) }
     
     // Audio feedback setup
     val mediaActionSound = remember { MediaActionSound() }
@@ -134,10 +160,13 @@ fun CameraScreen(
     }
     
     Box(modifier = modifier.fillMaxSize()) {
-        // LAYER 1 (Bottom): Camera Preview - ALWAYS RENDERED to keep session alive
+        // LAYER 1 (Bottom): Camera Preview with Virtual Crop — NEVER restarts
         ViewfinderScreen(
+            aspectRatio = previewAspectRatio,
+            targetCropRatio = targetCropRatio,
             onSurfaceReady = onSurfaceReady,
             onSurfaceDestroyed = onSurfaceDestroyed,
+            onSurfaceChanged = onSurfaceChanged,
             onTouchEvent = onTouchEvent
         )
         
@@ -177,66 +206,138 @@ fun CameraScreen(
             }
         }
         
+        // NOTE: The old "Aspect Ratio Switching Overlay" (LAYER 3.5) is REMOVED.
+        // Virtual crop is instant — no blocking overlay needed.
+        
         // LAYER 4: Camera Controls (only visible when gallery is closed)
         if (!showGallery) {
-            TopControlBar(
-                histogramData = histogramData,
-                flashMode = flashMode,
-                onFlashToggle = {
-                    flashMode = if (flashMode == 0) 1 else 0
-                    onFlashToggle()
-                },
-                onSettingsClick = { },
-                modifier = Modifier.align(Alignment.TopCenter)
+            // Top controls container with display cutout padding
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .windowInsetsPadding(WindowInsets.displayCutout)
+                    .windowInsetsPadding(WindowInsets.statusBars)
+            ) {
+                TopControlBar(
+                    currentRatio = currentRatio,
+                    onRatioChanged = {
+                        // Instant switch — no debounce needed!
+                        val newRatio = currentRatio.next()
+                        currentRatio = newRatio
+                        onAspectRatioChange(newRatio)
+                    },
+                    isHistogramVisible = showHistogram,
+                    onToggleHistogram = {
+                        showHistogram = !showHistogram
+                    },
+                    flashMode = flashMode,
+                    onFlashToggle = {
+                        flashMode = if (flashMode == 0) 1 else 0
+                        onFlashToggle()
+                    },
+                    onSettingsClick = { },
+                    modifier = Modifier.align(Alignment.TopCenter)
+                )
+            }
+            
+            // Orientation Indicator - Arrow that rotates to show device orientation
+            // Positioned below TopControlBar with extra padding to avoid notch
+            val rotationAngle by animateFloatAsState(
+                targetValue = -deviceOrientation.toFloat(),  // Negative to counter-rotate
+                animationSpec = tween(durationMillis = 300),
+                label = "orientation_rotation"
             )
             
-            BottomControlBar(
-                currentZoom = currentZoom,
-                onZoomChange = { zoom ->
-                    currentZoom = zoom
-                    onZoomChange(zoom)
-                },
-                selectedMode = selectedMode,
-                onModeChange = { mode ->
-                    val wasProMode = selectedMode == CameraMode.PRO
-                    selectedMode = mode
-                    val isNowProMode = mode == CameraMode.PRO
-                    
-                    if (wasProMode != isNowProMode) {
-                        activeManualTarget = ManualTarget.NONE
-                        onManualModeChange(isNowProMode)
-                    }
-                },
-                onGalleryClick = {
-                    showGallery = true
-                },
-                onShutterClick = {
-                    // 1. Play shutter sound immediately
-                    mediaActionSound.play(MediaActionSound.SHUTTER_CLICK)
-                    
-                    // 2. Trigger visual feedback (black flash)
-                    triggerShutterAnim = true
-                    
-                    // 3. Take the picture
-                    onShutterClick()
-                    
-                    // 4. Reload thumbnail after a short delay to allow image to be saved
-                    coroutineScope.launch {
-                        delay(500)
-                        latestThumbnail = GalleryManager.getLastImageThumbnail(context)
-                    }
-                },
-                onSwitchCamera = onSwitchCamera,
-                activeManualTarget = activeManualTarget,
-                onManualTargetChange = { target ->
-                    activeManualTarget = target
-                },
-                isoDisplayValue = "${(100 + isoValue * 3100).toInt()}",
-                shutterDisplayValue = "1/${(1 + shutterValue * 999).toInt()}",
-                focusDisplayValue = "${String.format("%.1f", focusValue * 10)}m",
-                galleryThumbnail = latestThumbnail,
-                modifier = Modifier.align(Alignment.BottomCenter)
-            )
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .windowInsetsPadding(WindowInsets.displayCutout)
+                    .windowInsetsPadding(WindowInsets.statusBars)
+                    .padding(top = 72.dp)  // Below TopControlBar (64dp height + 8dp spacing)
+                    .size(32.dp)
+                    .rotate(rotationAngle)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.ArrowDropUp,
+                    contentDescription = "Device orientation indicator",
+                    tint = Color.White.copy(alpha = 0.7f),
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
+            
+            // Histogram positioned below TopControlBar with cutout padding
+            AnimatedVisibility(
+                visible = showHistogram,
+                enter = fadeIn(),
+                exit = fadeOut(),
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .windowInsetsPadding(WindowInsets.displayCutout)
+                    .windowInsetsPadding(WindowInsets.statusBars)
+                    .padding(top = 72.dp, start = 16.dp)  // Below TopControlBar
+            ) {
+                HistogramGraph(
+                    dataCsv = histogramData,
+                    modifier = Modifier
+                )
+            }
+            
+            // Bottom controls container with navigation bar padding
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .windowInsetsPadding(WindowInsets.navigationBars)
+            ) {
+                BottomControlBar(
+                    currentZoom = currentZoom,
+                    onZoomChange = { zoom ->
+                        currentZoom = zoom
+                        onZoomChange(zoom)
+                    },
+                    selectedMode = selectedMode,
+                    onModeChange = { mode ->
+                        val wasProMode = selectedMode == CameraMode.PRO
+                        selectedMode = mode
+                        val isNowProMode = mode == CameraMode.PRO
+                        
+                        if (wasProMode != isNowProMode) {
+                            activeManualTarget = ManualTarget.NONE
+                            onManualModeChange(isNowProMode)
+                        }
+                    },
+                    onGalleryClick = {
+                        showGallery = true
+                    },
+                    onShutterClick = {
+                        // 1. Play shutter sound immediately
+                        mediaActionSound.play(MediaActionSound.SHUTTER_CLICK)
+                        
+                        // 2. Trigger visual feedback (black flash)
+                        triggerShutterAnim = true
+                        
+                        // 3. Take the picture
+                        onShutterClick()
+                        
+                        // 4. Reload thumbnail after a short delay to allow image to be saved
+                        coroutineScope.launch {
+                            delay(500)
+                            latestThumbnail = GalleryManager.getLastImageThumbnail(context)
+                        }
+                    },
+                    onSwitchCamera = onSwitchCamera,
+                    activeManualTarget = activeManualTarget,
+                    onManualTargetChange = { target ->
+                        activeManualTarget = target
+                    },
+                    isoDisplayValue = "${(100 + isoValue * 3100).toInt()}",
+                    shutterDisplayValue = "1/${(1 + shutterValue * 999).toInt()}",
+                    focusDisplayValue = "${String.format("%.1f", focusValue * 10)}m",
+                    galleryThumbnail = latestThumbnail,
+                    modifier = Modifier.align(Alignment.BottomCenter)
+                )
+            }
             
             // Manual controls slider
             AnimatedVisibility(
