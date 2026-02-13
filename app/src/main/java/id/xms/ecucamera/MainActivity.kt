@@ -152,8 +152,8 @@ class MainActivity : ComponentActivity() {
                         currentZoom = zoom
                         cameraEngine.setZoom(zoom)
                     },
-                    onFlashToggle = {
-                        cameraEngine.cycleFlash()
+                    onFlashModeChange = { mode ->
+                        cameraEngine.setFlash(mode)
                     },
                     onShutterClick = {
                         cameraEngine.takePicture()
