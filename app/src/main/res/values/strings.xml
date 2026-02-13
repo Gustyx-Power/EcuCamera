@@ -3,11 +3,11 @@
     <string name="app_name">EcuCamera</string>
     
     <!-- Camera Modes -->
-    <string name="mode_night">Malam</string>
-    <string name="mode_portrait">Potret</string>
-    <string name="mode_photo">Foto</string>
-    <string name="mode_video">Video</string>
-    <string name="mode_pro">Pro</string>
+    <string name="mode_night">WIP</string>
+    <string name="mode_portrait">WIP</string>
+    <string name="mode_photo">Photo</string>
+    <string name="mode_video">WIP</string>
+    <string name="mode_pro">WIP</string>
     
     <!-- Manual Control Labels -->
     <string name="label_iso">ISO</string>
@@ -23,6 +23,7 @@
     <string name="cd_flash_off">Flash Off</string>
     <string name="cd_flash_on">Flash On</string>
     <string name="cd_back">Back</string>
+    <string name="cd_toggle_histogram">Toggle Histogram</string>
     
     <!-- Zoom Labels -->
     <string name="zoom_1x">1x</string>

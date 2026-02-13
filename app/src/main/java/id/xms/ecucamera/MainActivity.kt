@@ -10,19 +10,22 @@ import android.view.ScaleGestureDetector
 import android.view.Surface
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
-import id.xms.ecucamera.engine.controller.FlashController
 import id.xms.ecucamera.engine.core.CameraEngine
 import id.xms.ecucamera.engine.core.CameraState
 import id.xms.ecucamera.engine.probe.HardwareProbe
 import id.xms.ecucamera.engine.pipeline.PipelineValidator
 import id.xms.ecucamera.ui.screens.CameraScreen
 import id.xms.ecucamera.ui.theme.EcuCameraTheme
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
@@ -56,10 +59,10 @@ class MainActivity : ComponentActivity() {
     ) { isGranted ->
         if (isGranted) {
             Log.d(TAG, "Storage permission granted")
-            startCameraEngine()
+            onPermissionsReady()
         } else {
             Log.e(TAG, "Storage permission denied")
-            startCameraEngine()
+            onPermissionsReady()
         }
     }
     
@@ -71,7 +74,7 @@ class MainActivity : ComponentActivity() {
         } else {
             Log.d(TAG, "Media images permission denied - gallery thumbnail may not work")
         }
-        startCameraEngine()
+        onPermissionsReady()
     }
     
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -79,8 +82,26 @@ class MainActivity : ComponentActivity() {
         
         Log.d(TAG, "EcuCamera starting")
         
+        // Enable edge-to-edge display
+        enableEdgeToEdge()
+        
+        // Configure immersive mode - hide system bars
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        val insetsController = WindowCompat.getInsetsController(window, window.decorView)
+        insetsController?.apply {
+            // Hide both status bar and navigation bar
+            hide(WindowInsetsCompat.Type.systemBars())
+            // Allow transient bars to show on swipe
+            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        }
+        
+        Log.d(TAG, "Immersive mode enabled")
+        
         cameraEngine = CameraEngine(this)
         hardwareProbe = HardwareProbe(this)
+        
+        // Set initial device rotation
+        updateDeviceRotation()
         
         scaleGestureDetector = ScaleGestureDetector(this, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
             override fun onScale(detector: ScaleGestureDetector): Boolean {
@@ -99,18 +120,30 @@ class MainActivity : ComponentActivity() {
         
         setContent {
             val cameraState by cameraEngine.cameraState.collectAsState()
+            val previewAspectRatio by cameraEngine.previewAspectRatio.collectAsState()
+            val targetCropRatio by cameraEngine.targetCropRatio.collectAsState()
+            val deviceOrientation by cameraEngine.deviceOrientation.collectAsState()
             
             EcuCameraTheme {
                 CameraScreen(
                     histogramData = histogramDataCsv,
                     cameraState = cameraState,
+                    previewAspectRatio = previewAspectRatio,
+                    targetCropRatio = targetCropRatio,
+                    deviceOrientation = deviceOrientation,
                     onSurfaceReady = { surface ->
+                        Log.d(TAG, "onSurfaceReady: Surface stored")
                         currentSurface = surface
-                        startCameraEngine()
                     },
                     onSurfaceDestroyed = {
+                        Log.d(TAG, "onSurfaceDestroyed")
                         currentSurface = null
                         cameraEngine.closeCamera()
+                    },
+                    onSurfaceChanged = { surface ->
+                        Log.d(TAG, "onSurfaceChanged: valid=${surface.isValid}, state=${cameraEngine.cameraState.value}")
+                        currentSurface = surface
+                        startCameraOnSurface(surface)
                     },
                     onTouchEvent = { event ->
                         scaleGestureDetector?.onTouchEvent(event) ?: false
@@ -127,6 +160,9 @@ class MainActivity : ComponentActivity() {
                     },
                     onSwitchCamera = {
                         
+                    },
+                    onAspectRatioChange = { ratio ->
+                        cameraEngine.setAspectRatio(ratio.toFloat())
                     },
                     onManualModeChange = { isManual ->
                         cameraEngine.setManualMode(isManual)
@@ -165,7 +201,7 @@ class MainActivity : ComponentActivity() {
             when (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_MEDIA_IMAGES)) {
                 PackageManager.PERMISSION_GRANTED -> {
                     Log.d(TAG, "Media images permission already granted")
-                    startCameraEngine()
+                    onPermissionsReady()
                 }
                 else -> {
                     Log.d(TAG, "Requesting media images permission")
@@ -174,12 +210,12 @@ class MainActivity : ComponentActivity() {
             }
         } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             Log.d(TAG, "Android 10-12: No storage permission needed")
-            startCameraEngine()
+            onPermissionsReady()
         } else {
             when (ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE)) {
                 PackageManager.PERMISSION_GRANTED -> {
                     Log.d(TAG, "Storage permission already granted")
-                    startCameraEngine()
+                    onPermissionsReady()
                 }
                 else -> {
                     Log.d(TAG, "Requesting storage permission")
@@ -189,72 +225,64 @@ class MainActivity : ComponentActivity() {
         }
     }
     
-    private fun startCameraEngine() {
-        val surface = currentSurface
-        if (surface == null) {
-            Log.w(TAG, "Surface not ready")
-            return
-        }
+    private var isEngineReady = false
+    
+    /** Runs hardware probe & pipeline validation. Idempotent. */
+    private fun onPermissionsReady() {
+        if (isEngineReady) return
         
         lifecycleScope.launch {
             try {
-                Log.d(TAG, "Starting hardware probe")
+                Log.d(TAG, "Running hardware probe & pipeline validation")
                 hardwareProbe.dumpCapabilities()
-                
-                Log.d(TAG, "Validating pipeline")
                 PipelineValidator.logPipelineArchitecture()
-                val pipelineValid = PipelineValidator.validatePipelineComponents()
                 
-                if (!pipelineValid) {
+                if (!PipelineValidator.validatePipelineComponents()) {
                     Log.e(TAG, "Pipeline validation failed")
                     return@launch
                 }
                 
-                Log.d(TAG, "Starting camera engine")
+                isEngineReady = true
+                Log.d(TAG, "Engine ready")
                 
-                lifecycleScope.launch {
-                    cameraEngine.cameraState.collect { state ->
-                        Log.d(TAG, "Camera state: $state")
-                        
-                        if (state is CameraState.Open) {
-                            Log.d(TAG, "Camera opened, starting preview")
-                            cameraEngine.startPreview(surface, 
-                                onAnalysis = { csvData ->
-                                    val currentTime = System.currentTimeMillis()
-                                    if (currentTime - lastHistogramUpdate > 33) {
-                                        histogramDataCsv = csvData
-                                        lastHistogramUpdate = currentTime
-                                    }
-                                }
-                            )
+                // If Surface already exists (permissions arrived after surface), start now
+                currentSurface?.let { s ->
+                    if (s.isValid && cameraEngine.isClosed) startCameraOnSurface(s)
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to initialize engine", e)
+            }
+        }
+    }
+    
+    /** Opens the camera on the given valid surface. Guarded: only runs when engine is ready and camera is closed. */
+    private fun startCameraOnSurface(surface: Surface) {
+        if (!isEngineReady || !surface.isValid || !cameraEngine.isClosed) {
+            Log.d(TAG, "startCameraOnSurface: skipped (ready=$isEngineReady, valid=${surface.isValid}, closed=${cameraEngine.isClosed})")
+            return
+        }
+        
+        val cameraId = cameraEngine.getLastCameraId() ?: "0"
+        Log.d(TAG, "startCameraOnSurface: Opening camera $cameraId")
+        
+        lifecycleScope.launch {
+            cameraEngine.openCamera(cameraId)
+            
+            val state = cameraEngine.cameraState.first { it is CameraState.Open || it is CameraState.Error }
+            
+            if (state is CameraState.Open) {
+                Log.d(TAG, "Camera $cameraId opened, starting preview")
+                cameraEngine.startPreview(surface,
+                    onAnalysis = { csvData ->
+                        val now = System.currentTimeMillis()
+                        if (now - lastHistogramUpdate > 33) {
+                            histogramDataCsv = csvData
+                            lastHistogramUpdate = now
                         }
                     }
-                }
-                
-                cameraEngine.openCamera("0")
-                
-                lifecycleScope.launch {
-                    delay(3000)
-                    
-                    val ultraWideCameraId = "2"
-                    if (cameraEngine.isCameraAvailable(ultraWideCameraId)) {
-                        Log.d(TAG, "Switching to ultra-wide camera")
-                        cameraEngine.switchCamera(ultraWideCameraId, surface,
-                            onAnalysis = { csvData ->
-                                val currentTime = System.currentTimeMillis()
-                                if (currentTime - lastHistogramUpdate > 33) {
-                                    histogramDataCsv = csvData
-                                    lastHistogramUpdate = currentTime
-                                }
-                            }
-                        )
-                    } else {
-                        Log.d(TAG, "Ultra-wide camera (ID: $ultraWideCameraId) not available on this device. Available cameras: ${cameraEngine.getAvailableCameraIds().joinToString()}")
-                    }
-                }
-                
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to start camera engine", e)
+                )
+            } else {
+                Log.e(TAG, "Camera $cameraId failed to open: $state")
             }
         }
     }
@@ -268,5 +296,15 @@ class MainActivity : ComponentActivity() {
     override fun onTouchEvent(event: MotionEvent): Boolean {
         scaleGestureDetector?.onTouchEvent(event)
         return super.onTouchEvent(event)
+    }
+    
+    /**
+     * Updates the device rotation in the camera engine.
+     * This ensures captured images have the correct orientation.
+     */
+    private fun updateDeviceRotation() {
+        val rotation = windowManager.defaultDisplay.rotation
+        cameraEngine.setDeviceRotation(rotation)
+        Log.d(TAG, "Device rotation updated: $rotation")
     }
 }
