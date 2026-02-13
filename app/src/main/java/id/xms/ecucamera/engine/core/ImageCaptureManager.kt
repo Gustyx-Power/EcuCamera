@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.BitmapFactory
 import android.media.ImageReader
 import android.net.Uri
+import android.os.Handler
 import android.util.Log
 import id.xms.ecucamera.engine.controller.CaptureController
 import id.xms.ecucamera.utils.BitmapUtils
@@ -20,6 +21,7 @@ class ImageCaptureManager(private val context: Context) {
     
     fun setupJpegListener(
         jpegReader: ImageReader,
+        backgroundHandler: Handler,
         targetCropRatio: () -> Float,
         deviceOrientationDegrees: () -> Int,
         sensorOrientation: () -> Int
@@ -97,6 +99,6 @@ class ImageCaptureManager(private val context: Context) {
             } catch (e: Exception) {
                 Log.e(TAG, "JPEG listener error", e)
             }
-        }, null)
+        }, backgroundHandler)
     }
 }
