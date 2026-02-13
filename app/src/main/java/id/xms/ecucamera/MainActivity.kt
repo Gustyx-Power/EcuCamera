@@ -123,6 +123,7 @@ class MainActivity : ComponentActivity() {
             val previewAspectRatio by cameraEngine.previewAspectRatio.collectAsState()
             val targetCropRatio by cameraEngine.targetCropRatio.collectAsState()
             val deviceOrientation by cameraEngine.deviceOrientation.collectAsState()
+            val lensFacing = cameraEngine.lensFacing
             
             EcuCameraTheme {
                 CameraScreen(
@@ -131,6 +132,7 @@ class MainActivity : ComponentActivity() {
                     previewAspectRatio = previewAspectRatio,
                     targetCropRatio = targetCropRatio,
                     deviceOrientation = deviceOrientation,
+                    lensFacing = lensFacing,
                     onSurfaceReady = { surface ->
                         Log.d(TAG, "onSurfaceReady: Surface stored")
                         currentSurface = surface
@@ -159,7 +161,23 @@ class MainActivity : ComponentActivity() {
                         cameraEngine.takePicture()
                     },
                     onSwitchCamera = {
-                        
+                        val success = cameraEngine.switchCamera()
+                        if (success) {
+                            // Restart preview with current surface
+                            currentSurface?.let { surface ->
+                                lifecycleScope.launch {
+                                    cameraEngine.startPreview(surface,
+                                        onAnalysis = { csvData ->
+                                            val now = System.currentTimeMillis()
+                                            if (now - lastHistogramUpdate > 33) {
+                                                histogramDataCsv = csvData
+                                                lastHistogramUpdate = now
+                                            }
+                                        }
+                                    )
+                                }
+                            }
+                        }
                     },
                     onAspectRatioChange = { ratio ->
                         cameraEngine.setAspectRatio(ratio.toFloat())
