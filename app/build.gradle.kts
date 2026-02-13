@@ -88,7 +88,7 @@ dependencies {
     implementation(libs.androidx.core.ktx)
     
     // AppCompat for theme support
-    implementation("androidx.appcompat:appcompat:1.7.0")
+    implementation("androidx.appcompat:appcompat:1.7.1")
     
     // Compose BOM
     implementation(platform("androidx.compose:compose-bom:2026.02.00"))
