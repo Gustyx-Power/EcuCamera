@@ -101,7 +101,7 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
     
     // Activity Compose
-    implementation("androidx.activity:activity-compose:1.12.3")
+    implementation("androidx.activity:activity-compose:1.12.4")
     
     // Lifecycle
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.10.0")
