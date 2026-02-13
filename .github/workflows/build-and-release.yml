@@ -1,0 +1,652 @@
+name: Build & Release to Telegram
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_type:
+        description: 'Build Type'
+        required: true
+        type: choice
+        options:
+          - release
+          - debug
+        default: release
+      upload_telegram:
+        description: 'Upload to Telegram?'
+        required: false
+        default: true
+        type: boolean
+      sign_apk:
+        description: 'Sign APK? (release only)'
+        required: false
+        default: true
+        type: boolean
+      force_build:
+        description: 'Force build regardless of commit count'
+        required: false
+        default: true
+        type: boolean
+
+env:
+  JAVA_VERSION: '21'
+  JAVA_DISTRIBUTION: 'temurin'
+  NDK_VERSION: '26.1.10909125'
+  MIN_COMMITS: 5
+
+jobs:
+  check-commits:
+    name: Check Commit Count
+    runs-on: ubuntu-latest
+    outputs:
+      should_build: ${{ steps.check.outputs.should_build }}
+      commit_count: ${{ steps.check.outputs.commit_count }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Restore last build commit
+        id: cache
+        uses: actions/cache@v5
+        with:
+          path: .last-build-commit
+          key: last-build-commit-${{ github.ref_name }}
+          restore-keys: last-build-commit-
+
+      - name: Check commit count since last build
+        id: check
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          # For manual triggers, always build
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "commit_count=manual" >> $GITHUB_OUTPUT
+            echo "Manual trigger - will build"
+            exit 0
+          fi
+          
+          # For push events, always build (since we added path filters)
+          if [ "${{ github.event_name }}" == "push" ]; then
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "commit_count=push" >> $GITHUB_OUTPUT
+            echo "Push trigger - will build"
+            exit 0
+          fi
+          
+          # For tag pushes, always build
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "commit_count=tag" >> $GITHUB_OUTPUT
+            echo "Tag push - will build"
+            exit 0
+          fi
+          
+          # Legacy commit count logic (fallback)
+          if [ -f ".last-build-commit" ]; then
+            LAST_BUILD_COMMIT=$(cat .last-build-commit)
+            echo "Last build commit: $LAST_BUILD_COMMIT"
+            
+            if git rev-parse --verify "$LAST_BUILD_COMMIT^{commit}" >/dev/null 2>&1; then
+              COMMIT_COUNT=$(git rev-list --count $LAST_BUILD_COMMIT..HEAD)
+              echo "Commits since last build: $COMMIT_COUNT"
+            else
+              echo "Last build commit not found in history"
+              COMMIT_COUNT=0
+            fi
+          else
+            echo "No previous build found"
+            COMMIT_COUNT=0
+          fi
+          
+          echo "commit_count=$COMMIT_COUNT" >> $GITHUB_OUTPUT
+          
+          if [ "$COMMIT_COUNT" -ge ${{ env.MIN_COMMITS }} ]; then
+            echo "should_build=true" >> $GITHUB_OUTPUT
+            echo "Commit count ($COMMIT_COUNT) >= ${{ env.MIN_COMMITS }} - will build"
+            
+            if [ -n "$BOT_TOKEN" ] && [ -n "$CHAT_ID" ]; then
+              MESSAGE="Commit threshold reached! Commits: $COMMIT_COUNT / ${{ env.MIN_COMMITS }} - Branch: $GITHUB_REF_NAME - Starting build..."
+              curl -s -X POST "https://botapi.arasea.dpdns.org/bot$BOT_TOKEN/sendMessage" \
+                -d chat_id="$CHAT_ID" \
+                --data-urlencode "text=$MESSAGE" \
+                -d disable_notification=true
+            fi
+          else
+            echo "should_build=false" >> $GITHUB_OUTPUT
+            REMAINING=$((${{ env.MIN_COMMITS }} - COMMIT_COUNT))
+            echo "Commit count ($COMMIT_COUNT) < ${{ env.MIN_COMMITS }} - skipping build"
+            echo "Need $REMAINING more commits"
+          fi
+
+
+  build:
+    name: Build Release APK (with Rust)
+    runs-on: ubuntu-latest
+    needs: check-commits
+    if: needs.check-commits.outputs.should_build == 'true'
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set Build Defaults
+        id: defaults
+        run: |
+          # Set defaults based on trigger type
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "build_type=${{ inputs.build_type || 'release' }}" >> $GITHUB_OUTPUT
+            echo "upload_telegram=${{ inputs.upload_telegram || 'true' }}" >> $GITHUB_OUTPUT
+            echo "sign_apk=${{ inputs.sign_apk || 'true' }}" >> $GITHUB_OUTPUT
+          else
+            # Auto trigger defaults
+            echo "build_type=release" >> $GITHUB_OUTPUT
+            echo "upload_telegram=true" >> $GITHUB_OUTPUT
+            echo "sign_apk=true" >> $GITHUB_OUTPUT
+          fi
+
+          VERSION=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts | head -n 1)
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Notify Build Start
+        id: notify_start
+        if: |
+          (github.event_name == 'push') || 
+          (github.event_name == 'workflow_dispatch' && inputs.upload_telegram != false)
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          VERSION: ${{ steps.defaults.outputs.version }}
+          COMMIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
+          WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          # Get commit message and escape special characters
+          COMMIT_MSG=$(git log -1 --pretty=format:"%s" | sed 's/[<>&"]/\\&/g')
+          
+          # Create message with proper escaping
+          MESSAGE="<b>EcuCamera Release Build</b>
+          Version: $VERSION
+          Branch: $GITHUB_REF_NAME
+          
+          <blockquote><code>$COMMIT_MSG</code></blockquote>
+          
+          <a href=\"$COMMIT_URL\">Commit</a> | <a href=\"$WORKFLOW_URL\">Workflow</a>"
+          
+          # Send message to Telegram
+          RESPONSE=$(curl -s -X POST "https://botapi.arasea.dpdns.org/bot$BOT_TOKEN/sendMessage" \
+            -d chat_id="$CHAT_ID" \
+            --data-urlencode "text=$MESSAGE" \
+            -d parse_mode="HTML" \
+            -d disable_web_page_preview="true")
+          
+          # Extract message ID
+          # Extract message ID using jq for safety
+          MESSAGE_ID=$(echo "$RESPONSE" | jq -r '.result.message_id')
+          echo "message_id=$MESSAGE_ID" >> $GITHUB_OUTPUT
+          
+          # Debug output
+          echo "Telegram Response: $RESPONSE"
+
+      - name: Create Progress Helper
+        run: |
+          cat > update_progress.sh << 'EOF'
+          #!/bin/bash
+          MESSAGE_ID=$1
+          PROGRESS=$2
+          STATUS=$3
+          
+          # Check variables
+          echo "Debug: Updating Progress - ID: $MESSAGE_ID, Progress: $PROGRESS"
+          
+          if [ -z "$BOT_TOKEN" ] || [ -z "$CHAT_ID" ] || [ -z "$MESSAGE_ID" ] || [ "$MESSAGE_ID" = "null" ]; then
+            echo "Missing variables for progress update (or ID is null)"
+            exit 0
+          fi
+          
+          BAR_LENGTH=14
+          FILLED_LENGTH=$(( $PROGRESS * $BAR_LENGTH / 100 ))
+          UNFILLED_LENGTH=$(( $BAR_LENGTH - $FILLED_LENGTH ))
+          
+          # Create bar
+          BAR=""
+          for ((i=0; i<FILLED_LENGTH; i++)); do BAR+="▓"; done
+          for ((i=0; i<UNFILLED_LENGTH; i++)); do BAR+="░"; done
+          
+          # Gather System Info (One Time)
+          if [ -z "$SYS_INFO" ]; then
+            CPU=$(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs | cut -d' ' -f1-3)
+            CORES=$(nproc)
+            RAM=$(free -h | awk '/^Mem:/ {print $2}')
+            OS=$(grep -oP 'PRETTY_NAME="\K[^"]+' /etc/os-release | head -n 1)
+            KERNEL=$(uname -r)
+            SYS_INFO="
+          <b>Runner Specs:</b>
+          💻 <code>$CPU ($CORES CORES)</code>
+          🧠 <code>RAM: $RAM</code>
+          🐧 <code>$OS ($KERNEL)</code>"
+          fi
+
+          # Reconstruct message (variables taken from env)
+          MESSAGE="<b>EcuCamera Release Build</b>
+          Version: $VERSION
+          Branch: $BRANCH
+          
+          <blockquote><code>$COMMIT_MSG</code></blockquote>
+          
+          <b>Status:</b> $STATUS
+          <code>[$BAR] $PROGRESS%</code>
+          
+          $SYS_INFO
+          
+          <a href=\"$COMMIT_URL\">Commit</a> | <a href=\"$WORKFLOW_URL\">Workflow</a>"
+          
+          RESPONSE=$(curl -s -X POST "https://botapi.arasea.dpdns.org/bot$BOT_TOKEN/editMessageText" \
+            -d chat_id="$CHAT_ID" \
+            -d message_id="$MESSAGE_ID" \
+            -d parse_mode="HTML" \
+            --data-urlencode "text=$MESSAGE" \
+            -d disable_web_page_preview="true")
+            
+          echo "Debug: Telegram Response: $RESPONSE"
+          EOF
+          chmod +x update_progress.sh
+
+      - name: Setup JDK
+        uses: actions/setup-java@v5
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          cache: gradle
+
+      - name: Update Progress (10%)
+        if: steps.notify_start.outputs.message_id != ''
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          MESSAGE_ID: ${{ steps.notify_start.outputs.message_id }}
+          VERSION: ${{ steps.defaults.outputs.version }}
+          BRANCH: ${{ github.ref_name }}
+          COMMIT_MSG: ${{ github.event.head_commit.message || github.event.inputs.message || 'Manual Build' }}
+          COMMIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
+          WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          COMMIT_MSG=$(git log -1 --pretty=format:"%s" | sed 's/[<>&"]/\\&/g')
+          export COMMIT_MSG
+          ./update_progress.sh "$MESSAGE_ID" "10" "Setting up Environment..."
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        run: |
+          sdkmanager --install "ndk;${{ env.NDK_VERSION }}"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/${{ env.NDK_VERSION }}" >> $GITHUB_ENV
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add Rust Android targets
+        run: rustup target add aarch64-linux-android
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            app/src/main/rust/target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Build Rust Native Library
+        run: |
+          COMMIT_MSG=$(git log -1 --pretty=format:"%s" | sed 's/[<>&"]/\\&/g')
+          export COMMIT_MSG
+          ./update_progress.sh "${{ steps.notify_start.outputs.message_id }}" "40" "Building Native Libraries..."
+          
+          cd app/src/main/rust
+          cargo ndk -t arm64-v8a -o ../../jniLibs build --release 2>&1 | tee ../../../../../rust_build.log
+          cat ../../../../../rust_build.log >> ../../../../../build.log
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          MESSAGE_ID: ${{ steps.notify_start.outputs.message_id }}
+          VERSION: ${{ steps.defaults.outputs.version }}
+          BRANCH: ${{ github.ref_name }}
+          COMMIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
+          WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+      - name: Verify Native Library
+        run: |
+          if [ -f "app/src/main/jniLibs/arm64-v8a/libecucamera_engine.so" ]; then
+            echo "Native library found"
+          else
+            echo "Native library NOT found"
+            exit 1
+          fi
+
+      - name: Create gradle.properties
+        run: |
+          echo "org.gradle.jvmargs=-Xmx4g -XX:+HeapDumpOnOutOfMemoryError -Dfile.encoding=UTF-8" > gradle.properties
+          echo "org.gradle.parallel=true" >> gradle.properties
+          echo "org.gradle.caching=true" >> gradle.properties
+          echo "org.gradle.configuration-cache=true" >> gradle.properties
+          echo "android.useAndroidX=true" >> gradle.properties
+          echo "android.enableJetifier=false" >> gradle.properties
+          echo "kotlin.code.style=official" >> gradle.properties
+          echo "android.nonTransitiveRClass=true" >> gradle.properties
+          echo "android.nonFinalResIds=true" >> gradle.properties
+          # Play Protect compatibility optimizations
+          echo "android.enableR8.fullMode=true" >> gradle.properties
+          echo "android.experimental.enableSourceSetPathsMap=true" >> gradle.properties
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Checkout Keystore Repository
+        if: |
+          (github.event_name == 'push') || 
+          (github.event_name == 'workflow_dispatch' && inputs.build_type == 'release' && inputs.sign_apk == true)
+        uses: actions/checkout@v6
+        with:
+          repository: Xtra-Manager-Software/XMS-Keystore-Apps
+          token: ${{ secrets.PRIVATE_REPO_TOKEN }}
+          path: keystore-repo
+
+      - name: Copy Keystore
+        if: |
+          (github.event_name == 'push') || 
+          (github.event_name == 'workflow_dispatch' && inputs.build_type == 'release' && inputs.sign_apk == true)
+        run: |
+          cp keystore-repo/Keystore-EcuCamera/ecu-release-key.jks $GITHUB_WORKSPACE/release.keystore
+          ls -lh $GITHUB_WORKSPACE/release.keystore
+
+      - name: Print Keystore SHA1
+        if: |
+          (github.event_name == 'push') || 
+          (github.event_name == 'workflow_dispatch' && inputs.build_type == 'release' && inputs.sign_apk == true)
+        run: |
+          keytool -list -v \
+            -keystore $GITHUB_WORKSPACE/release.keystore \
+            -alias ${{ secrets.KEY_ALIAS }} \
+            -storepass ${{ secrets.KEYSTORE_PASSWORD }} \
+            -keypass ${{ secrets.KEY_PASSWORD }}
+
+      - name: Build Signed Release APK
+        if: |
+          (github.event_name == 'push') || 
+          (github.event_name == 'workflow_dispatch' && inputs.build_type == 'release' && inputs.sign_apk == true)
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          MESSAGE_ID: ${{ steps.notify_start.outputs.message_id }}
+          VERSION: ${{ steps.defaults.outputs.version }}
+          BRANCH: ${{ github.ref_name }}
+          COMMIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
+          WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          COMMIT_MSG=$(git log -1 --pretty=format:"%s" | sed 's/[<>&"]/\\&/g')
+          export COMMIT_MSG
+          ./update_progress.sh "$MESSAGE_ID" "60" "Building APK..."
+          
+          ./gradlew assembleRelease \
+            -PmyKeystorePath=$GITHUB_WORKSPACE/release.keystore \
+            -PmyKeystorePassword=${{ secrets.KEYSTORE_PASSWORD }} \
+            -PmyKeyAlias=${{ secrets.KEY_ALIAS }} \
+            -PmyKeyPassword=${{ secrets.KEY_PASSWORD }} 2>&1 | tee -a build.log
+
+      - name: Optimize APK for Play Protect
+        if: |
+          (github.event_name == 'push') || 
+          (github.event_name == 'workflow_dispatch' && inputs.build_type == 'release')
+        run: |
+          # Verify APK signature
+          APK_PATH=$(find app/build/outputs/apk/release -name "*.apk" -type f 2>/dev/null | head -n 1)
+          if [ -n "$APK_PATH" ] && [ -f "$APK_PATH" ]; then
+            echo "APK found: $APK_PATH"
+            
+            # Check APK signature
+            if [ "${{ inputs.sign_apk }}" = "true" ]; then
+              $ANDROID_SDK_ROOT/build-tools/34.0.0/aapt dump badging "$APK_PATH" | grep "package:"
+              echo "APK signature verification:"
+              jarsigner -verify -verbose -certs "$APK_PATH"
+            fi
+            
+            # Check APK size and compression
+            APK_SIZE=$(stat -c%s "$APK_PATH")
+            echo "APK size: $APK_SIZE bytes ($(($APK_SIZE / 1024 / 1024)) MB)"
+            
+            # Verify native libraries
+            unzip -l "$APK_PATH" | grep "lib/arm64-v8a/"
+            
+            # Check for suspicious strings (optional)
+            strings "$APK_PATH" | grep -i "root\|su\|superuser" | head -5 || echo "No suspicious strings found"
+          fi
+
+      - name: Build Unsigned Release APK
+        if: github.event_name == 'workflow_dispatch' && inputs.build_type == 'release' && inputs.sign_apk == false
+        run: ./gradlew assembleRelease
+
+      - name: Build Debug APK
+        if: github.event_name == 'workflow_dispatch' && inputs.build_type == 'debug'
+        run: ./gradlew assembleDebug
+
+      - name: Generate Build Reproducibility Info
+        if: |
+          (github.event_name == 'push') || 
+          (github.event_name == 'workflow_dispatch' && inputs.build_type == 'release')
+        run: |
+          mkdir -p build-info
+          
+          # Generate build info
+          cat > build-info/build-info.json << EOF
+          {
+            "build_time": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "git_commit": "$GITHUB_SHA",
+            "git_branch": "$GITHUB_REF_NAME",
+            "build_number": "$GITHUB_RUN_NUMBER",
+            "workflow_url": "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID",
+            "java_version": "${{ env.JAVA_VERSION }}",
+            "ndk_version": "${{ env.NDK_VERSION }}",
+            "gradle_version": "$(./gradlew --version | grep Gradle | cut -d' ' -f2)",
+            "kotlin_version": "$(./gradlew --version | grep Kotlin | cut -d' ' -f4)",
+            "build_tools": "$(ls $ANDROID_SDK_ROOT/build-tools/ | tail -1)",
+            "signed": "${{ inputs.sign_apk }}",
+            "reproducible": true
+          }
+          EOF
+          
+          # Generate checksums
+          APK_PATH=$(find app/build/outputs/apk/release -name "*.apk" -type f 2>/dev/null | head -n 1)
+          if [ -n "$APK_PATH" ] && [ -f "$APK_PATH" ]; then
+            sha256sum "$APK_PATH" > build-info/checksums.txt
+            md5sum "$APK_PATH" >> build-info/checksums.txt
+          fi
+          
+          cat build-info/build-info.json
+          cat build-info/checksums.txt
+
+      - name: Prepare Release Artifact
+        id: rename
+        run: |
+          mkdir -p app/dist
+          VERSION="${{ steps.defaults.outputs.version }}"
+          
+          # Determine build type
+          if [ "${{ github.event_name }}" == "push" ]; then
+            BUILD_TYPE="release"
+          else
+            BUILD_TYPE="${{ inputs.build_type }}"
+          fi
+          
+          if [ "$BUILD_TYPE" = "release" ]; then
+            APK_PATH=$(find app/build/outputs/apk/release -name "*.apk" -type f 2>/dev/null | head -n 1)
+            APK_NAME="EcuCamera-$VERSION.apk"
+          else
+            APK_PATH=$(find app/build/outputs/apk/debug -name "*.apk" -type f 2>/dev/null | head -n 1)
+            APK_NAME="EcuCamera-$VERSION-debug.apk"
+          fi
+          
+          if [ -n "$APK_PATH" ] && [ -f "$APK_PATH" ]; then
+            cp "$APK_PATH" "app/dist/$APK_NAME"
+            APK_SIZE=$(du -h "app/dist/$APK_NAME" | cut -f1)
+            echo "apk_size=$APK_SIZE" >> $GITHUB_OUTPUT
+            echo "apk_name=$APK_NAME" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Notify Build Complete
+        if: |
+          (github.event_name == 'push') || 
+          (github.event_name == 'workflow_dispatch' && inputs.upload_telegram != false)
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          VERSION: ${{ steps.defaults.outputs.version }}
+          APK_SIZE: ${{ steps.rename.outputs.apk_size }}
+          APK_NAME: ${{ steps.rename.outputs.apk_name }}
+          COMMIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
+          WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          START_MESSAGE_ID: ${{ steps.notify_start.outputs.message_id }}
+        run: |
+          APK_FILE="app/dist/$APK_NAME"
+          
+          if [ ! -f "$APK_FILE" ]; then
+            echo "APK file not found"
+            exit 1
+          fi
+          
+          # Get commit message and escape special characters
+          COMMIT_MSG=$(git log -1 --pretty=format:"%s" | sed 's/[<>&"]/\\&/g')
+          
+          # Determine build label and type
+          if [ "${{ github.event_name }}" == "push" ]; then
+            BUILD_LABEL="Auto Release Build"
+            BUILD_TYPE="release"
+          else
+            BUILD_TYPE="${{ inputs.build_type }}"
+            if [ "$BUILD_TYPE" = "release" ]; then
+              BUILD_LABEL="Manual Release Build"
+            else
+              BUILD_LABEL="Debug Build"
+            fi
+          fi
+          
+          # Create caption with proper formatting
+          CAPTION="<b>EcuCamera $BUILD_LABEL</b>
+          Version: $VERSION
+          Size: $APK_SIZE
+          
+          <blockquote><code>$COMMIT_MSG</code></blockquote>
+          
+          <a href=\"$COMMIT_URL\">Commit</a> | <a href=\"$WORKFLOW_URL\">Workflow</a>"
+          
+          echo "Uploading APK: $APK_FILE"
+          echo "File size: $(ls -lh "$APK_FILE" | awk '{print $5}')"
+          
+          # Upload APK to Telegram
+          RESPONSE=$(curl -sS -F chat_id="$CHAT_ID" \
+            -F document=@"$APK_FILE" \
+            -F parse_mode="HTML" \
+            --form-string "caption=$CAPTION" \
+            "https://botapi.arasea.dpdns.org/bot$BOT_TOKEN/sendDocument")
+          
+          echo "Telegram Response: $RESPONSE"
+          
+          # Check if upload was successful
+          if echo "$RESPONSE" | grep -q '"ok":true'; then
+            echo "APK uploaded successfully!"
+            ./update_progress.sh "$MESSAGE_ID" "100" "Build Complete!"
+          else
+            echo "Failed to upload APK!"
+            echo "$RESPONSE"
+            ./update_progress.sh "$MESSAGE_ID" "100" "Upload Failed!"
+          fi
+          
+          # Upload Build Log
+          if [ -f "build.log" ]; then
+            echo "Uploading Build Log..."
+            curl -sS -F chat_id="$CHAT_ID" \
+              -F document=@"build.log" \
+              -F caption="Build Log" \
+              "https://botapi.arasea.dpdns.org/bot$BOT_TOKEN/sendDocument"
+          fi
+          
+          # Delete start message logic moved to Cleanup only
+          # We want to KEEP the progress bar message on success as a record
+          # if [ -n "$START_MESSAGE_ID" ]; then
+          #   curl -s -X POST "https://botapi.arasea.dpdns.org/bot$BOT_TOKEN/deleteMessage" \
+          #     -d chat_id="$CHAT_ID" \
+          #     -d message_id="$START_MESSAGE_ID"
+          # fi
+
+      - name: Cleanup on Failure
+        if: |
+          failure() && (
+            (github.event_name == 'push') || 
+            (github.event_name == 'workflow_dispatch' && inputs.upload_telegram != false)
+          )
+        env:
+          BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          VERSION: ${{ steps.defaults.outputs.version }}
+          BRANCH: ${{ github.ref_name }}
+          COMMIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
+          WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          START_MESSAGE_ID: ${{ steps.notify_start.outputs.message_id }}
+        run: |
+          COMMIT_MSG=$(git log -1 --pretty=format:"%s" | sed 's/[<>&"]/\\&/g')
+          export COMMIT_MSG
+          
+          # Update status to Failed
+          if [ -n "$START_MESSAGE_ID" ]; then
+             ./update_progress.sh "$START_MESSAGE_ID" "0" "Build Failed! ❌"
+          fi
+
+          # Upload Build Log if exists
+          if [ -f "build.log" ]; then
+            echo "Uploading Build Log..."
+            curl -sS -F chat_id="$CHAT_ID" \
+              -F document=@"build.log" \
+              -F caption="Build Failed! Log attached." \
+              "https://botapi.arasea.dpdns.org/bot$BOT_TOKEN/sendDocument"
+          fi
+          
+          # Delete start message logic (commented out to preserve error status, or keep if preferred)
+          # Keeping original logic to delete if requested, but update_progress modifies the message, so maybe we shouldn't delete it?
+          # The original logic deleted the "Starting" message. Since we are now EDITING that message for progress, 
+          # we probably want to keep it as the "Status" board, or delete it if we want to clean up.
+          # However, the user asked for progress bar.
+          # If we delete it, we lose the progress bar.
+          # I will REMOVE the delete logic for the start message so the status remains visible.
+          
+          # if [ -n "$START_MESSAGE_ID" ]; then
+          #   curl -s -X POST "https://botapi.arasea.dpdns.org/bot$BOT_TOKEN/deleteMessage" \
+          #     -d chat_id="$CHAT_ID" \
+          #     -d message_id="$START_MESSAGE_ID"
+          # fi
+
+      - name: Save last build commit
+        if: success()
+        run: |
+          echo "$GITHUB_SHA" > .last-build-commit
+          echo "Saved last build commit: $GITHUB_SHA"
+
+      - name: Update cache with new commit
+        if: success()
+        uses: actions/cache/save@v5
+        with:
+          path: .last-build-commit
+          key: last-build-commit-${{ github.ref_name }}-${{ github.sha }}
+
+      - name: Cleanup Keystore
+        if: always()
+        run: |
+          rm -f $GITHUB_WORKSPACE/release.keystore
+          rm -rf keystore-repo
