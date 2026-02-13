@@ -97,6 +97,9 @@ fun CameraScreen(
     onIsoChange: (Float) -> Unit = {},
     onShutterChange: (Float) -> Unit = {},
     onFocusChange: (Float) -> Unit = {},
+    onTapToFocus: (Float, Float, Int, Int) -> Unit = { _, _, _, _ -> },
+    onLongPressLock: (Float, Float, Int, Int) -> Unit = { _, _, _, _ -> },
+    onExposureAdjust: (Float) -> Unit = {},
     onCloseApp: () -> Unit = {},
     onPhotoTaken: () -> Unit = {},
     modifier: Modifier = Modifier
@@ -203,7 +206,10 @@ fun CameraScreen(
             onSurfaceReady = onSurfaceReady,
             onSurfaceDestroyed = onSurfaceDestroyed,
             onSurfaceChanged = onSurfaceChanged,
-            onTouchEvent = onTouchEvent
+            onTouchEvent = onTouchEvent,
+            onTapToFocus = onTapToFocus,
+            onLongPressLock = onLongPressLock,
+            onExposureAdjust = onExposureAdjust
         )
         
         // LAYER 2: Shutter Effect Overlay (Black flash animation)

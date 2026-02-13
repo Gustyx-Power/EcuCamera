@@ -176,6 +176,15 @@ class MainActivity : ComponentActivity() {
                     onFocusChange = { value ->
                         cameraEngine.updateFocus(value)
                     },
+                    onTapToFocus = { x, y, viewWidth, viewHeight ->
+                        cameraEngine.focusOnPoint(x, y, viewWidth, viewHeight)
+                    },
+                    onLongPressLock = { x, y, viewWidth, viewHeight ->
+                        cameraEngine.triggerAeAfLock(x, y, viewWidth, viewHeight)
+                    },
+                    onExposureAdjust = { level ->
+                        cameraEngine.setExposureCompensation(level)
+                    },
                     onCloseApp = { finish() }
                 )
             }

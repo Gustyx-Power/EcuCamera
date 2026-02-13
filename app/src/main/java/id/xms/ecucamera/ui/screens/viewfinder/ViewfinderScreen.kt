@@ -7,6 +7,8 @@ import android.view.SurfaceHolder
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.aspectRatio
@@ -21,11 +23,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.viewinterop.AndroidView
 import id.xms.ecucamera.ui.components.AutoFitSurfaceView
+import id.xms.ecucamera.ui.components.hud.FocusReticle
 import id.xms.ecucamera.ui.components.hud.GridOverlay
 import kotlin.math.abs
 import kotlin.math.max
@@ -67,6 +72,7 @@ import kotlin.math.max
  * @param onSurfaceDestroyed Called when the Surface is destroyed
  * @param onSurfaceChanged  Called when the Surface dimensions change
  * @param onTouchEvent     Touch handler for gestures
+ * @param onTapToFocus    Called when user taps to focus (x, y, viewWidth, viewHeight)
  */
 @Composable
 fun ViewfinderScreen(
@@ -76,9 +82,16 @@ fun ViewfinderScreen(
     onSurfaceReady: (Surface) -> Unit,
     onSurfaceDestroyed: () -> Unit,
     onSurfaceChanged: (Surface) -> Unit = {},
-    onTouchEvent: ((MotionEvent) -> Boolean)? = null
+    onTouchEvent: ((MotionEvent) -> Boolean)? = null,
+    onTapToFocus: ((Float, Float, Int, Int) -> Unit)? = null,
+    onLongPressLock: ((Float, Float, Int, Int) -> Unit)? = null,
+    onExposureAdjust: ((Float) -> Unit)? = null
 ) {
     var surfaceView by remember { mutableStateOf<AutoFitSurfaceView?>(null) }
+    var tapOffset by remember { mutableStateOf(Offset.Unspecified) }
+    var isLocked by remember { mutableStateOf(false) }
+    var exposureLevel by remember { mutableStateOf(0.5f) }
+    var showSlider by remember { mutableStateOf(false) }
 
     BoxWithConstraints(
         modifier = Modifier
@@ -209,51 +222,110 @@ fun ViewfinderScreen(
             label = "maskWidth"
         )
 
-        // ── SurfaceView with scale animation ──
-        AndroidView(
+        Box(
             modifier = Modifier
-                .aspectRatio(3f / 4f) // Force 4:3 portrait aspect ratio
+                .aspectRatio(3f / 4f)
                 .graphicsLayer {
                     scaleX = animatedScale
                     scaleY = animatedScale
-                },
-            factory = { context ->
-                AutoFitSurfaceView(context).apply {
-                    surfaceView = this
+                }
+        ) {
+            AndroidView(
+                modifier = Modifier.fillMaxSize(),
+                factory = { context ->
+                    AutoFitSurfaceView(context).apply {
+                        surfaceView = this
+                        setAspectRatio(4, 3)
 
-                    // Set the camera buffer ratio (always 4:3 landscape)
-                    setAspectRatio(4, 3)
-
-                    holder.addCallback(object : SurfaceHolder.Callback {
-                        override fun surfaceCreated(holder: SurfaceHolder) {
-                            Log.d("ViewfinderScreen", "surfaceCreated: valid=${holder.surface.isValid}")
-                            onSurfaceReady(holder.surface)
-                        }
-
-                        override fun surfaceDestroyed(holder: SurfaceHolder) {
-                            Log.d("ViewfinderScreen", "surfaceDestroyed")
-                            onSurfaceDestroyed()
-                        }
-
-                        override fun surfaceChanged(
-                            holder: SurfaceHolder,
-                            format: Int,
-                            width: Int,
-                            height: Int
-                        ) {
-                            Log.d("ViewfinderScreen", "surfaceChanged: ${width}x${height}, valid=${holder.surface.isValid}")
-                            if (holder.surface.isValid) {
-                                onSurfaceChanged(holder.surface)
+                        holder.addCallback(object : SurfaceHolder.Callback {
+                            override fun surfaceCreated(holder: SurfaceHolder) {
+                                Log.d("ViewfinderScreen", "surfaceCreated: valid=${holder.surface.isValid}")
+                                onSurfaceReady(holder.surface)
                             }
-                        }
-                    })
 
-                    setOnTouchListener { _, event ->
-                        onTouchEvent?.invoke(event) ?: false
+                            override fun surfaceDestroyed(holder: SurfaceHolder) {
+                                Log.d("ViewfinderScreen", "surfaceDestroyed")
+                                onSurfaceDestroyed()
+                            }
+
+                            override fun surfaceChanged(
+                                holder: SurfaceHolder,
+                                format: Int,
+                                width: Int,
+                                height: Int
+                            ) {
+                                Log.d("ViewfinderScreen", "surfaceChanged: ${width}x${height}, valid=${holder.surface.isValid}")
+                                if (holder.surface.isValid) {
+                                    onSurfaceChanged(holder.surface)
+                                }
+                            }
+                        })
+
+                        setOnTouchListener { _, event ->
+                            onTouchEvent?.invoke(event) ?: false
+                        }
                     }
                 }
+            )
+            
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .pointerInput(Unit) {
+                        detectTapGestures(
+                            onTap = { offset ->
+                                Log.d("ECU_TAP", "Tap at (${offset.x}, ${offset.y})")
+                                
+                                tapOffset = offset
+                                isLocked = false
+                                showSlider = true
+                                exposureLevel = 0.5f
+                                
+                                onTapToFocus?.invoke(
+                                    offset.x,
+                                    offset.y,
+                                    size.width,
+                                    size.height
+                                )
+                            },
+                            onLongPress = { offset ->
+                                Log.d("ECU_TAP", "Long press at (${offset.x}, ${offset.y}) - AE/AF LOCK")
+                                
+                                tapOffset = offset
+                                isLocked = true
+                                showSlider = true
+                                
+                                onLongPressLock?.invoke(
+                                    offset.x,
+                                    offset.y,
+                                    size.width,
+                                    size.height
+                                )
+                            }
+                        )
+                    }
+                    .pointerInput(Unit) {
+                        detectVerticalDragGestures { change, dragAmount ->
+                            if (showSlider && tapOffset != Offset.Unspecified) {
+                                change.consume()
+                                
+                                val newLevel = (exposureLevel - dragAmount / 200f).coerceIn(0f, 1f)
+                                exposureLevel = newLevel
+                                
+                                Log.d("ECU_TAP", "Exposure adjusted: $newLevel")
+                                onExposureAdjust?.invoke(newLevel)
+                            }
+                        }
+                    }
+            ) {
+                FocusReticle(
+                    targetOffset = tapOffset,
+                    isLocked = isLocked,
+                    exposureLevel = exposureLevel,
+                    showSlider = showSlider
+                )
             }
-        )
+        }
         
         // ── Grid Overlay (Composition Guides) ──
         // CRITICAL: Uses aspectRatio(3f/4f) to match the 4:3 preview exactly

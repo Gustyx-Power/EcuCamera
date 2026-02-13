@@ -628,6 +628,155 @@ class CameraEngine(private val context: Context) {
         }
     }
     
+    /**
+     * Trigger tap-to-focus at a specific point in the preview
+     * 
+     * @param x Touch X coordinate in view space
+     * @param y Touch Y coordinate in view space
+     * @param viewWidth Width of the preview view
+     * @param viewHeight Height of the preview view
+     */
+    fun focusOnPoint(x: Float, y: Float, viewWidth: Int, viewHeight: Int) {
+        Log.d("ECU_ENGINE", "focusOnPoint called: ($x, $y)")
+        
+        engineScope.launch {
+            try {
+                val cameraId = currentCameraId ?: run {
+                    Log.e("ECU_ENGINE", "focusOnPoint: No camera ID available")
+                    return@launch
+                }
+                val device = cameraDevice ?: run {
+                    Log.e("ECU_ENGINE", "focusOnPoint: No camera device available")
+                    return@launch
+                }
+                val session = captureSession ?: run {
+                    Log.e("ECU_ENGINE", "focusOnPoint: No capture session available")
+                    return@launch
+                }
+                
+                val characteristics = cameraManager.getCameraCharacteristics(cameraId)
+                val activeArraySize = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+                    ?: run {
+                        Log.e("ECU_ENGINE", "focusOnPoint: No active array size available")
+                        return@launch
+                    }
+                
+                val sensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
+                
+                val viewFinder = currentViewFinderSurface ?: run {
+                    Log.e("ECU_ENGINE", "focusOnPoint: No viewfinder surface available")
+                    return@launch
+                }
+                val reader = imageReader ?: run {
+                    Log.e("ECU_ENGINE", "focusOnPoint: No image reader available")
+                    return@launch
+                }
+                
+                val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+                builder.addTarget(viewFinder)
+                builder.addTarget(reader.surface)
+                
+                focusController.focusOnPoint(
+                    x, y,
+                    viewWidth, viewHeight,
+                    sensorOrientation,
+                    activeArraySize,
+                    builder
+                )
+                
+                cameraControls.applyToPreviewBuilder(builder)
+                session.capture(builder.build(), null, backgroundHandler)
+                
+                Log.d("ECU_ENGINE", "Tap-to-focus request sent ✓")
+                
+                delay(4000)
+                
+                val resetBuilder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+                resetBuilder.addTarget(viewFinder)
+                resetBuilder.addTarget(reader.surface)
+                
+                focusController.cancelFocus(resetBuilder)
+                cameraControls.applyToPreviewBuilder(resetBuilder)
+                session.setRepeatingRequest(resetBuilder.build(), null, backgroundHandler)
+                
+                Log.d("ECU_ENGINE", "Returned to continuous AF ✓")
+                
+            } catch (e: Exception) {
+                Log.e("ECU_ENGINE", "Failed to focus on point", e)
+            }
+        }
+    }
+    
+    fun triggerAeAfLock(x: Float, y: Float, viewWidth: Int, viewHeight: Int) {
+        Log.d("ECU_ENGINE", "triggerAeAfLock called: ($x, $y)")
+        
+        engineScope.launch {
+            try {
+                val cameraId = currentCameraId ?: return@launch
+                val device = cameraDevice ?: return@launch
+                val session = captureSession ?: return@launch
+                
+                val characteristics = cameraManager.getCameraCharacteristics(cameraId)
+                val activeArraySize = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE) ?: return@launch
+                val sensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
+                
+                val viewFinder = currentViewFinderSurface ?: return@launch
+                val reader = imageReader ?: return@launch
+                
+                val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+                builder.addTarget(viewFinder)
+                builder.addTarget(reader.surface)
+                
+                focusController.triggerAeAfLock(
+                    x, y,
+                    viewWidth, viewHeight,
+                    sensorOrientation,
+                    activeArraySize,
+                    builder
+                )
+                
+                cameraControls.applyToPreviewBuilder(builder)
+                session.setRepeatingRequest(builder.build(), null, backgroundHandler)
+                
+                Log.d("ECU_ENGINE", "AE/AF Lock applied ✓")
+                
+            } catch (e: Exception) {
+                Log.e("ECU_ENGINE", "Failed to trigger AE/AF lock", e)
+            }
+        }
+    }
+    
+    fun setExposureCompensation(sliderValue: Float) {
+        engineScope.launch {
+            try {
+                val compensation = exposureController.calculateExposureCompensation(sliderValue)
+                updateRepeatingRequestWithExposure(compensation)
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to set exposure compensation", e)
+            }
+        }
+    }
+    
+    private fun updateRepeatingRequestWithExposure(compensation: Int) {
+        try {
+            val device = cameraDevice ?: return
+            val session = captureSession ?: return
+            val reader = imageReader ?: return
+            val viewFinder = currentViewFinderSurface ?: return
+            
+            val builder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW)
+            builder.addTarget(viewFinder)
+            builder.addTarget(reader.surface)
+            
+            cameraControls.applyToPreviewBuilder(builder)
+            exposureController.applyExposureCompensation(builder, compensation)
+            
+            session.setRepeatingRequest(builder.build(), null, backgroundHandler)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to update repeating request with exposure", e)
+        }
+    }
+    
     fun setManualMode(enabled: Boolean) {
         engineScope.launch {
             cameraControls.setManualMode(enabled)

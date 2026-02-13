@@ -17,20 +17,27 @@ class ExposureController {
     var exposureTimeRange: Range<Long>? = null
         private set
     
+    var exposureCompensationRange: Range<Int>? = null
+        private set
+    
+    var exposureCompensationStep: Float = 0f
+        private set
+    
     /**
      * Initialize exposure ranges from camera characteristics
      */
     fun setRanges(characteristics: CameraCharacteristics) {
         try {
-            // Get ISO sensitivity range
             isoRange = characteristics.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE)
             Log.d(TAG, "ISO Range: ${isoRange?.lower} - ${isoRange?.upper}")
             
-            // Get exposure time range (in nanoseconds)
             exposureTimeRange = characteristics.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE)
             Log.d(TAG, "Exposure Time Range: ${exposureTimeRange?.lower}ns - ${exposureTimeRange?.upper}ns")
             
-            // Log human-readable exposure times
+            exposureCompensationRange = characteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)
+            exposureCompensationStep = characteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP)?.toFloat() ?: 0f
+            Log.d(TAG, "Exposure Compensation Range: ${exposureCompensationRange?.lower} - ${exposureCompensationRange?.upper}, Step: $exposureCompensationStep")
+            
             exposureTimeRange?.let { range ->
                 val minSeconds = range.lower / 1_000_000_000.0
                 val maxSeconds = range.upper / 1_000_000_000.0
@@ -119,20 +126,35 @@ class ExposureController {
     fun applyToBuilder(builder: android.hardware.camera2.CaptureRequest.Builder, isManualMode: Boolean, currentIso: Int, currentExpTime: Long) {
         try {
             if (isManualMode && isManualExposureSupported()) {
-                // Set manual exposure mode
                 builder.set(android.hardware.camera2.CaptureRequest.CONTROL_AE_MODE, android.hardware.camera2.CaptureRequest.CONTROL_AE_MODE_OFF)
                 builder.set(android.hardware.camera2.CaptureRequest.SENSOR_SENSITIVITY, currentIso)
                 builder.set(android.hardware.camera2.CaptureRequest.SENSOR_EXPOSURE_TIME, currentExpTime)
                 Log.d(TAG, "Applied manual exposure: ISO=$currentIso, ExpTime=${currentExpTime}ns")
             } else {
-                // Set auto exposure mode
                 builder.set(android.hardware.camera2.CaptureRequest.CONTROL_AE_MODE, android.hardware.camera2.CaptureRequest.CONTROL_AE_MODE_ON)
                 Log.d(TAG, "Applied auto exposure mode")
             }
         } catch (e: Exception) {
             Log.e(TAG, "Failed to apply exposure settings", e)
-            // Fallback to auto exposure
             builder.set(android.hardware.camera2.CaptureRequest.CONTROL_AE_MODE, android.hardware.camera2.CaptureRequest.CONTROL_AE_MODE_ON)
+        }
+    }
+    
+    fun calculateExposureCompensation(sliderValue: Float): Int {
+        val range = exposureCompensationRange ?: return 0
+        val minComp = range.lower
+        val maxComp = range.upper
+        val compensation = (minComp + (maxComp - minComp) * sliderValue).toInt()
+        Log.d(TAG, "Exposure Compensation: slider=$sliderValue -> $compensation")
+        return compensation
+    }
+    
+    fun applyExposureCompensation(builder: android.hardware.camera2.CaptureRequest.Builder, compensation: Int) {
+        try {
+            builder.set(android.hardware.camera2.CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, compensation)
+            Log.d(TAG, "Applied exposure compensation: $compensation")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to apply exposure compensation", e)
         }
     }
 }
